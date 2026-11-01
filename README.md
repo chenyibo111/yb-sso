@@ -1,31 +1,60 @@
-# Feishu SSO
+# 飞书企业成员 SSO（本地开发版）
 
-一个供多个个人项目复用的 Go 单点登录中心。当前阶段在本机开发和调试，成员身份由已有的飞书测试企业提供。
+多个本地 Go 项目共用一个 OIDC 登录中心。飞书测试企业的自建应用是唯一登录入口。Ory Hydra 提供 OIDC 协议、客户端登记及令牌；本项目的 Go 服务处理飞书授权回调。两个演示项目用于验证同一成员在不同项目获得相同的 `sub`。
 
-## 已确定的边界
+## 运行条件
 
-- 仅允许该飞书测试企业的成员登录；飞书是唯一登录方式。
-- 登录中心作为 OpenID Connect (OIDC) 提供方，业务项目作为 OIDC 客户端接入。
-- 每个成员在登录中心拥有稳定的内部用户 ID，飞书身份单独映射。
-- 第一阶段验证两名成员可分别登录两个本地项目，且同一成员在两个项目中对应同一个内部用户 ID。
-- 当前不提供公开注册、用户名密码登录、多租户或线上部署。
+- Docker Desktop 和 Docker Compose
+- Go 1.27（也可以用 Docker 的 `golang:1.27.1` 镜像编译）
+- 已创建并启用的飞书企业自建应用，应用可用范围包含测试成员；登录回调地址为 `http://localhost:9000/auth/feishu/callback`
 
-## 建议的本地拓扑
+把 `.env.example` 复制为 `.env`，填入 App ID、App Secret 和回调地址。`.env` 已被 Git 忽略。不要把真实凭证写入提交或问题反馈。
 
-| 服务 | 示例地址 | 用途 |
-| --- | --- | --- |
-| SSO | `http://localhost:9000` | 飞书登录回调与 OIDC 提供方 |
-| 项目 A | `http://localhost:3000` | OIDC 客户端示例 |
-| 项目 B | `http://localhost:3001` | OIDC 客户端示例 |
-| PostgreSQL | 本机端口 | 用户映射、客户端与会话数据 |
+## 启动
 
-这些地址只是开发配置，实际回调地址必须与飞书开放平台及 OIDC 客户端的登记值一致。飞书是否接受 `localhost` 回调需在开发者后台验证；若不接受，可给本地 SSO 配置临时可访问的 HTTPS 地址。
+在仓库目录执行：
 
-## 后续实施顺序
+```powershell
+docker compose up -d
+./scripts/register-clients.ps1
+go run ./cmd/sso
+```
 
-1. 创建飞书企业自建应用，开放给测试成员，获取 App ID 和 App Secret，登记登录回调地址。
-2. 实现 Go 服务的飞书授权回调、成员身份校验和内部用户映射。
-3. 接入 Go OIDC 提供方组件，实现授权码流程、发现文档、公钥发布及客户端配置。
-4. 创建两个本地示例项目，验证登录、跨项目复用登录状态、退出和成员失效场景。
+另开两个终端：
 
-架构与安全边界见 [设计说明](docs/architecture.md)。真实凭证只放在本地环境变量或未提交的配置文件中。
+```powershell
+go run ./cmd/demo -port 3100
+go run ./cmd/demo -port 3101
+```
+
+若 Windows 尚未安装 Go，可用已有的 Go Docker 镜像编译 Windows 程序：
+
+```powershell
+docker run --rm -v "${PWD}:/workspace" -w /workspace -e GOOS=windows -e GOARCH=amd64 golang:1.27.1 go build -o bin/sso.exe ./cmd/sso
+docker run --rm -v "${PWD}:/workspace" -w /workspace -e GOOS=windows -e GOARCH=amd64 golang:1.27.1 go build -o bin/demo.exe ./cmd/demo
+./bin/sso.exe
+./bin/demo.exe -port 3100
+./bin/demo.exe -port 3101
+```
+
+这些进程需分别占用终端。打开 [项目 A](http://localhost:3100) 登录，再打开 [项目 B](http://localhost:3101)；两处显示的成员 ID 应一致。换另一名成员时，用独立浏览器会话分别测试。OIDC 发现文档位于 `http://localhost:4444/.well-known/openid-configuration`。
+
+## 本地端口
+
+| 服务 | 地址 |
+| --- | --- |
+| Hydra OIDC 公开端口 | `http://localhost:4444` |
+| Hydra 管理端口，仅绑定本机 | `http://localhost:4445` |
+| Go 飞书登录服务 | `http://localhost:9000` |
+| 演示项目 A / B | `http://localhost:3100` / `http://localhost:3101` |
+
+Hydra 与 PostgreSQL 容器使用固定的**本地开发专用**密钥和密码，不能直接用于线上。`demo-a`、`demo-b` 是公开客户端，使用授权码和 PKCE。新增本地项目时，在 Hydra 登记独立客户端 ID 与精确回调地址，并按 OIDC 发现文档集成。
+
+## 当前边界
+
+- 成员资格依赖飞书企业自建应用的企业归属与可用范围，以及登录时飞书返回的有效用户信息。未另外同步通讯录或实现实时禁用事件。
+- 演示项目的“退出此应用”只清除该项目的本地会话；Hydra 登录会话仍可能使再次登录自动完成。跨项目统一退出尚未实现。
+- 内部 `sub` 根据 App ID 与飞书 `open_id` 稳定生成。切换飞书应用会产生新的 `sub`；当前没有账户迁移流程。
+- 尚未在真实飞书浏览器登录中验证完整链路。飞书回调若不接受 localhost，需要调整飞书平台和 `.env` 中的地址，并提供能到达本机的 HTTPS 回调入口。
+
+架构细节见 [设计说明](docs/architecture.md)。

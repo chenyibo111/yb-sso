@@ -4,9 +4,9 @@
 
 **Goal:** Provide a local Go OIDC provider that authenticates only members of the configured Feishu test enterprise, plus two local clients that demonstrate single sign-on.
 
-**Architecture:** A Feishu custom app supplies the upstream member identity. A Go OIDC provider maps its app-scoped open_id to a stable internal subject and handles downstream authorization code flows. Two sample clients trust the provider, not Feishu.
+**Architecture:** A Feishu custom app supplies the upstream member identity. A custom Go login service maps its app-scoped open_id to a stable internal subject and accepts Hydra login and consent challenges. Hydra, itself written in Go, handles the downstream OIDC protocol. Two sample clients trust Hydra, not Feishu.
 
-**Tech Stack:** Go 1.27, ZITADEL OIDC library, Feishu OAuth API, PostgreSQL for local persistence, Docker Go toolchain.
+**Tech Stack:** Go 1.27, Ory Hydra 2.3, Feishu OAuth API, PostgreSQL 16, Docker Compose.
 
 **Spec:** `docs/architecture.md`
 
@@ -29,9 +29,9 @@
 
 ### Task 1: Feishu identity boundary
 
-**Files:** Create `internal/feishu/client.go`, `internal/feishu/client_test.go`, `internal/identity/store.go`, `internal/identity/store_test.go`.
+**Files:** Create `internal/feishu/client.go`, `internal/feishu/client_test.go`, `internal/identity/subject.go`, `internal/identity/subject_test.go`.
 
-**Interfaces:** `Client.User(ctx, code) (Identity, error)` exchanges a one-time code and retrieves the user; `Store.Resolve(ctx, Identity) (string, error)` returns a stable subject.
+**Interfaces:** `Client.User(ctx, code) (Identity, error)` exchanges a one-time code and retrieves the user; `Subject(appID, openID string) (string, error)` returns a stable subject.
 
 - [ ] Write tests for missing identity, upstream errors, and stable subject mapping.
 - [ ] Run `go test ./internal/...` and observe the expected failures.
@@ -40,9 +40,9 @@
 
 ### Task 2: OIDC provider and login flow
 
-**Files:** Create `cmd/sso/main.go`, `internal/server/server.go`, `internal/server/server_test.go`, `go.mod`.
+**Files:** Create `cmd/sso/main.go`, `internal/server/server.go`, `internal/server/server_test.go`, `compose.yaml`, `go.mod`.
 
-**Interfaces:** HTTP server exposes OIDC discovery, authorization, token, JWKS and Feishu login/callback routes; client registrations are explicit.
+**Interfaces:** Hydra exposes OIDC discovery, authorization, token and JWKS; the Go server handles Feishu login/callback and Hydra consent challenges. Client registrations are explicit.
 
 - [ ] Write HTTP tests for state validation, authorization rejection and authentication/session transitions.
 - [ ] Run `go test ./...` and observe the expected failures.
