@@ -1,0 +1,76 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: hydra
+      POSTGRES_PASSWORD: local-development-only-password
+      POSTGRES_DB: hydra
+    volumes:
+      - hydra-db:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hydra -d hydra"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  hydra-migrate:
+    image: oryd/hydra:v2.3.0
+    command: migrate sql up -e --yes
+    environment:
+      DSN: postgres://hydra:local-development-only-password@postgres:5432/hydra?sslmode=disable
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  hydra:
+    image: oryd/hydra:v2.3.0
+    command: serve all --dev
+    environment:
+      DSN: postgres://hydra:local-development-only-password@postgres:5432/hydra?sslmode=disable
+      SECRETS_SYSTEM: local-development-only-hydra-secret-32-characters
+      URLS_SELF_ISSUER: http://localhost:4444/
+      URLS_LOGIN: http://localhost:9000/login
+      URLS_CONSENT: http://localhost:9000/consent
+      URLS_LOGOUT: http://localhost:9000/logout
+      OIDC_SUBJECT_IDENTIFIERS_SUPPORTED_TYPES: public
+    ports:
+      - "127.0.0.1:4444:4444"
+      - "127.0.0.1:4445:4445"
+    depends_on:
+      hydra-migrate:
+        condition: service_completed_successfully
+
+  demo-a:
+    restart: on-failure
+    build:
+      context: .
+      dockerfile: Dockerfile.demo
+    command: ["-port", "3100"]
+    environment:
+      HYDRA_DIAL_ADDRESS: host.docker.internal:4444
+      SSO_STATUS_URL: http://host.docker.internal:9000/session-status
+      DEMO_BIND_ADDRESS: 0.0.0.0
+    ports:
+      - "127.0.0.1:3100:3100"
+    depends_on:
+      - hydra
+
+  demo-b:
+    restart: on-failure
+    build:
+      context: .
+      dockerfile: Dockerfile.demo
+    command: ["-port", "3101"]
+    environment:
+      HYDRA_DIAL_ADDRESS: host.docker.internal:4444
+      SSO_STATUS_URL: http://host.docker.internal:9000/session-status
+      DEMO_BIND_ADDRESS: 0.0.0.0
+    ports:
+      - "127.0.0.1:3101:3101"
+    depends_on:
+      - hydra
+
+volumes:
+  hydra-db:
