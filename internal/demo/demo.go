@@ -149,9 +149,12 @@ func (h *handler) home(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-			_, _ = fmt.Fprintf(w, "<!doctype html><title>%s</title><h1>%s</h1><p>已登录成员 ID：<code>%s</code></p><a href='/logout'>退出此应用</a>", html.EscapeString(h.clientID), html.EscapeString(h.clientID), html.EscapeString(s.subject))
+			_, _ = fmt.Fprintf(w, "<!doctype html><title>%s</title><h1>%s</h1><p>已登录成员 ID：<code>%s</code></p><a href='/logout'>退出所有项目</a>", html.EscapeString(h.clientID), html.EscapeString(h.clientID), html.EscapeString(s.subject))
 			return
 		}
+		http.SetCookie(w, &http.Cookie{Name: h.cookieName("session"), Path: "/", MaxAge: -1, HttpOnly: true, SameSite: http.SameSiteLaxMode})
+		http.Redirect(w, r, "/logged-out", http.StatusFound)
+		return
 	}
 	http.Redirect(w, r, "/login", http.StatusFound)
 }
@@ -200,8 +203,10 @@ func (h *handler) callback(w http.ResponseWriter, r *http.Request) {
 	for _, name := range []string{"state", "verifier", "nonce"} {
 		http.SetCookie(w, &http.Cookie{Name: h.cookieName(name), Path: "/callback", MaxAge: -1, HttpOnly: true, SameSite: http.SameSiteLaxMode})
 	}
-	ctx := oidc.ClientContext(r.Context(), &http.Client{Timeout: 10 * time.Second})
-	token, err := h.oauth.Exchange(ctx, r.URL.Query().Get("code"), oauth2.VerifierOption(values["verifier"]))
+	client := h.httpClient
+	if client == nil { client = http.DefaultClient }
+	ctx := oidc.ClientContext(r.Context(), client)
+	token, err := h.exchangeCode(r.Context(), r.URL.Query().Get("code"), values["verifier"])
 	if err != nil {
 		http.Error(w, "token exchange failed", http.StatusBadGateway)
 		return
@@ -233,6 +238,12 @@ func (h *handler) callback(w http.ResponseWriter, r *http.Request) {
 	h.mu.Unlock()
 	http.SetCookie(w, &http.Cookie{Name: h.cookieName("session"), Value: sid, Path: "/", MaxAge: 3600, HttpOnly: true, SameSite: http.SameSiteLaxMode})
 	http.Redirect(w, r, "/", http.StatusFound)
+}
+
+func (h *handler) exchangeCode(ctx context.Context, code, verifier string) (*oauth2.Token, error) {
+	client := h.httpClient
+	if client == nil { client = http.DefaultClient }
+	return h.oauth.Exchange(oidc.ClientContext(ctx, client), code, oauth2.VerifierOption(verifier))
 }
 
 func (h *handler) logout(w http.ResponseWriter, r *http.Request) {

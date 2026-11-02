@@ -101,3 +101,14 @@ func TestProtectedPageRejectsRevokedSessionAndFailsClosedOnOutage(t *testing.T) 
 		t.Fatalf("outage exposed protected page: %d", w.Code)
 	}
 }
+
+func TestBackchannelEvictedBrowserSessionShowsLoggedOutPage(t *testing.T) {
+	h := &handler{clientID: "demo-b", sessions: map[string]session{}}
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r.AddCookie(&http.Cookie{Name: "demo-b_session", Value: "evicted"})
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if w.Code != http.StatusFound || w.Header().Get("Location") != "/logged-out" {
+		t.Fatalf("evicted browser session redirected to %q", w.Header().Get("Location"))
+	}
+}

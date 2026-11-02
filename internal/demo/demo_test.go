@@ -1,13 +1,28 @@
 package demo
 
 import (
+	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 
 	"golang.org/x/oauth2"
 )
+
+type transportFunc func(*http.Request) (*http.Response, error)
+func (f transportFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func TestCodeExchangeUsesConfiguredHydraTransport(t *testing.T) {
+	h := &handler{oauth: oauth2.Config{ClientID: "demo-a", Endpoint: oauth2.Endpoint{TokenURL: "http://localhost:4444/token"}}, httpClient: &http.Client{Transport: transportFunc(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Host != "localhost:4444" { t.Fatalf("unexpected token host %s", r.URL.Host) }
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(`{"access_token":"test-token","token_type":"Bearer"}`)), Request: r}, nil
+	})}}
+	token, err := h.exchangeCode(context.Background(), "code", "verifier")
+	if err != nil || token.AccessToken != "test-token" { t.Fatalf("configured transport not used: token=%v err=%v", token, err) }
+}
 
 func TestLoginCreatesPKCERequestAndBrowserState(t *testing.T) {
 	h := &handler{clientID: "demo-a", oauth: oauth2.Config{ClientID: "demo-a", RedirectURL: "http://localhost:3100/callback", Endpoint: oauth2.Endpoint{AuthURL: "http://localhost:4444/oauth2/auth"}, Scopes: []string{"openid", "profile"}}}
