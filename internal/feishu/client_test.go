@@ -35,18 +35,18 @@ func TestUserExchangesCodeAndGetsIdentity(t *testing.T) {
 			if r.Header.Get("Authorization") != "Bearer user-token" {
 				t.Error("missing user token")
 			}
-			_, _ = w.Write([]byte(`{"code":0,"data":{"open_id":"ou_alice","name":"Alice"}}`))
+			_, _ = w.Write([]byte(`{"code":0,"data":{"open_id":"ou_alice","name":"Alice","tenant_key":"tenant-1"}}`))
 		default:
 			http.NotFound(w, r)
 		}
 	}))
 	defer srv.Close()
-	client := Client{AppID: "cli_test", AppSecret: "secret", BaseURL: srv.URL, HTTP: srv.Client()}
+	client := Client{AppID: "cli_test", AppSecret: "secret", TenantKey: "tenant-1", BaseURL: srv.URL, HTTP: srv.Client()}
 	got, err := client.User(context.Background(), "one-time-code")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.OpenID != "ou_alice" || got.Name != "Alice" {
+	if got.OpenID != "ou_alice" || got.Name != "Alice" || got.TenantKey != "tenant-1" {
 		t.Fatalf("unexpected identity: %#v", got)
 	}
 	if len(calls) != 3 {
@@ -69,8 +69,33 @@ func TestUserFailsClosedOnMissingOpenID(t *testing.T) {
 		}
 	}))
 	defer srv.Close()
-	client := Client{AppID: "cli_test", AppSecret: "secret", BaseURL: srv.URL, HTTP: srv.Client()}
+	client := Client{AppID: "cli_test", AppSecret: "secret", TenantKey: "tenant-1", BaseURL: srv.URL, HTTP: srv.Client()}
 	if _, err := client.User(context.Background(), "code"); err == nil {
 		t.Fatal("missing open_id accepted")
+	}
+}
+
+func TestUserRejectsMissingOrDifferentTenant(t *testing.T) {
+	for _, tenant := range []string{"", "another-tenant"} {
+		t.Run(tenant, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				switch r.URL.Path {
+				case "/open-apis/auth/v3/app_access_token/internal":
+					_, _ = w.Write([]byte(`{"code":0,"app_access_token":"app"}`))
+				case "/open-apis/authen/v1/access_token":
+					_, _ = w.Write([]byte(`{"code":0,"data":{"access_token":"user"}}`))
+				case "/open-apis/authen/v1/user_info":
+					_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]string{"open_id": "ou_alice", "tenant_key": tenant}})
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			defer srv.Close()
+			client := Client{AppID: "cli_test", AppSecret: "secret", TenantKey: "tenant-1", BaseURL: srv.URL, HTTP: srv.Client()}
+			if _, err := client.User(context.Background(), "code"); err == nil {
+				t.Fatal("accepted identity outside configured tenant")
+			}
+		})
 	}
 }

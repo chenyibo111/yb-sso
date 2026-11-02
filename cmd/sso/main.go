@@ -39,7 +39,10 @@ func main() {
 	if err := loadLocalEnv(".env"); err != nil {
 		log.Fatal(err)
 	}
-	member := feishu.Client{AppID: os.Getenv("FEISHU_APP_ID"), AppSecret: os.Getenv("FEISHU_APP_SECRET")}
+	member := feishu.Client{AppID: os.Getenv("FEISHU_APP_ID"), AppSecret: os.Getenv("FEISHU_APP_SECRET"), TenantKey: os.Getenv("FEISHU_TENANT_KEY")}
+	if member.TenantKey == "" {
+		log.Fatal("FEISHU_TENANT_KEY is required")
+	}
 	sso, err := server.New(server.Config{
 		AppID:         member.AppID,
 		RedirectURI:   os.Getenv("FEISHU_REDIRECT_URI"),

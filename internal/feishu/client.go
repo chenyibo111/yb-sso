@@ -13,13 +13,15 @@ import (
 )
 
 type Identity struct {
-	OpenID string `json:"open_id"`
-	Name   string `json:"name"`
+	OpenID    string `json:"open_id"`
+	Name      string `json:"name"`
+	TenantKey string `json:"tenant_key"`
 }
 
 type Client struct {
 	AppID     string
 	AppSecret string
+	TenantKey string
 	BaseURL   string
 	HTTP      *http.Client
 }
@@ -70,7 +72,7 @@ func (c Client) request(ctx context.Context, method, path, bearer string, body a
 
 // User exchanges a Feishu authorization code and reads the authenticated member.
 func (c Client) User(ctx context.Context, code string) (Identity, error) {
-	if c.AppID == "" || c.AppSecret == "" || strings.TrimSpace(code) == "" {
+	if c.AppID == "" || c.AppSecret == "" || c.TenantKey == "" || strings.TrimSpace(code) == "" {
 		return Identity{}, errors.New("missing Feishu credentials or authorization code")
 	}
 	var app struct {
@@ -102,7 +104,7 @@ func (c Client) User(ctx context.Context, code string) (Identity, error) {
 	if err := c.request(ctx, http.MethodGet, "/open-apis/authen/v1/user_info", token.Data.AccessToken, nil, &user); err != nil {
 		return Identity{}, err
 	}
-	if user.Code != 0 || user.Data.OpenID == "" {
+	if user.Code != 0 || user.Data.OpenID == "" || user.Data.TenantKey != c.TenantKey {
 		return Identity{}, errors.New("Feishu member identity unavailable")
 	}
 	return user.Data, nil

@@ -8,7 +8,7 @@
 - Go 1.27（也可以用 Docker 的 `golang:1.27.1` 镜像编译）
 - 已创建并启用的飞书企业自建应用，应用可用范围包含测试成员；登录回调地址为 `http://localhost:9000/auth/feishu/callback`
 
-把 `.env.example` 复制为 `.env`，填入 App ID、App Secret 和回调地址。`.env` 已被 Git 忽略。不要把真实凭证写入提交或问题反馈。
+把 `.env.example` 复制为 `.env`，填入 App ID、App Secret、回调地址和测试企业的 `tenant_key`。`tenant_key` 必须与飞书登录用户信息返回的 `tenant_key` 完全一致；未配置时登录服务拒绝启动，字段缺失或不匹配时拒绝登录。可在飞书开放平台的「获取登录用户信息」API 调试页使用测试成员身份确认该字段。`.env` 已被 Git 忽略。不要把真实凭证写入提交或问题反馈。
 
 ## 启动
 
