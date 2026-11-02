@@ -112,3 +112,45 @@ func TestBackchannelEvictedBrowserSessionShowsLoggedOutPage(t *testing.T) {
 		t.Fatalf("evicted browser session redirected to %q", w.Header().Get("Location"))
 	}
 }
+
+func TestBackchannelLogoutRejectsNonceAndMalformedEvent(t *testing.T) {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	jwks := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(jose.JSONWebKeySet{Keys: []jose.JSONWebKey{{Key: &key.PublicKey, KeyID: "key-1", Algorithm: string(jose.RS256)}}})
+	}))
+	defer jwks.Close()
+	signer, err := jose.NewSigner(jose.SigningKey{Algorithm: jose.RS256, Key: jose.JSONWebKey{Key: key, KeyID: "key-1"}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name  string
+		claim string
+		value any
+	}{
+		{"empty nonce", "nonce", ""},
+		{"null nonce", "nonce", nil},
+		{"string event", "events", map[string]any{logoutEvent: "wrong"}},
+		{"null event", "events", map[string]any{logoutEvent: nil}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			claims := map[string]any{"iss": "http://localhost:4444/", "aud": []string{"demo-a"}, "iat": time.Now().Unix(), "jti": "unique-1", "sid": "sid-a", "events": map[string]any{logoutEvent: map[string]any{}}}
+			claims[tc.claim] = tc.value
+			token, err := jwt.Signed(signer).Claims(claims).Serialize()
+			if err != nil {
+				t.Fatal(err)
+			}
+			h := &handler{clientID: "demo-a", issuer: "http://localhost:4444/", jwksURL: jwks.URL, httpClient: jwks.Client(), sessions: map[string]session{"cookie": {sid: "sid-a"}}}
+			w := httptest.NewRecorder()
+			r := httptest.NewRequest(http.MethodPost, "/backchannel-logout", strings.NewReader(url.Values{"logout_token": {token}}.Encode()))
+			r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			h.ServeHTTP(w, r)
+			if w.Code != http.StatusUnauthorized || len(h.sessions) != 1 {
+				t.Fatalf("invalid claims accepted: status %d, sessions %d", w.Code, len(h.sessions))
+			}
+		})
+	}
+}

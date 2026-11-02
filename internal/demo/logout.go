@@ -77,16 +77,21 @@ func (h *handler) verifyLogoutToken(ctx context.Context, raw string) (string, er
 			IssuedAt int64                      `json:"iat"`
 			ID       string                     `json:"jti"`
 			SID      string                     `json:"sid"`
-			Nonce    string                     `json:"nonce"`
+			Nonce    json.RawMessage            `json:"nonce"`
 			Events   map[string]json.RawMessage `json:"events"`
 		}
 		if err := parsed.Claims(key.Key, &claims); err != nil {
 			continue
 		}
-		if claims.Issuer != h.issuer || len(claims.Audience) != 1 || claims.Audience[0] != h.clientID || claims.ID == "" || claims.SID == "" || claims.Nonce != "" {
+		if claims.Issuer != h.issuer || len(claims.Audience) != 1 || claims.Audience[0] != h.clientID || claims.ID == "" || claims.SID == "" || len(claims.Nonce) != 0 {
 			continue
 		}
-		if _, ok := claims.Events[logoutEvent]; !ok {
+		rawEvent, ok := claims.Events[logoutEvent]
+		if !ok {
+			continue
+		}
+		var event map[string]json.RawMessage
+		if err := json.Unmarshal(rawEvent, &event); err != nil || event == nil {
 			continue
 		}
 		issued := time.Unix(claims.IssuedAt, 0)
