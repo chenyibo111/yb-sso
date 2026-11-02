@@ -7,6 +7,8 @@ services:
       POSTGRES_DB: hydra
     volumes:
       - hydra-db:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:5433:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U hydra -d hydra"]
       interval: 3s

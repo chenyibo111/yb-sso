@@ -23,11 +23,22 @@ type MemberClient interface {
 	User(context.Context, string) (feishu.Identity, error)
 }
 
+type RevocationStore interface {
+	Revoke(context.Context, string) error
+	Revoked(context.Context, string) (bool, error)
+}
+
+type TokenVerifier interface {
+	Verify(context.Context, string) (string, error)
+}
+
 type Config struct {
 	AppID              string
 	RedirectURI        string
 	FeishuAuthorizeURL string
 	HydraAdminURL      string
+	Revocations        RevocationStore
+	TokenVerifier      TokenVerifier
 }
 
 type pendingLogin struct {
@@ -64,6 +75,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.callback(w, r)
 	case "/consent":
 		s.consent(w, r)
+	case "/logout":
+		s.logout(w, r)
+	case "/session-status":
+		s.sessionStatus(w, r)
 	case "/healthz":
 		w.WriteHeader(http.StatusOK)
 	default:

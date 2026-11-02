@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"log"
 	"net/http"
 	"os"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/chenyibo111/yb-sso/internal/feishu"
 	"github.com/chenyibo111/yb-sso/internal/server"
+	"github.com/chenyibo111/yb-sso/internal/session"
 )
 
 func loadLocalEnv(path string) error {
@@ -43,10 +45,21 @@ func main() {
 	if member.TenantKey == "" {
 		log.Fatal("FEISHU_TENANT_KEY is required")
 	}
+	store, err := session.Open(context.Background(), os.Getenv("SSO_DATABASE_URL"))
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer store.Close()
+	verifier, err := session.NewVerifier(context.Background(), "http://localhost:4444/")
+	if err != nil {
+		log.Fatal(err)
+	}
 	sso, err := server.New(server.Config{
 		AppID:         member.AppID,
 		RedirectURI:   os.Getenv("FEISHU_REDIRECT_URI"),
 		HydraAdminURL: "http://localhost:4445",
+		Revocations:   store,
+		TokenVerifier: verifier,
 	}, member)
 	if err != nil {
 		log.Fatal(err)
