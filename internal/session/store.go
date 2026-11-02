@@ -27,6 +27,16 @@ func Open(ctx context.Context, dsn string) (*Store, error) {
 		pool.Close()
 		return nil, err
 	}
+	if _, err := pool.Exec(ctx, `CREATE TABLE IF NOT EXISTS sso_member_identities (
+		subject text PRIMARY KEY,
+		open_id text NOT NULL,
+		display_name text NOT NULL,
+		tenant_key text NOT NULL,
+		updated_at timestamptz NOT NULL DEFAULT now()
+	)`); err != nil {
+		pool.Close()
+		return nil, err
+	}
 	return &Store{pool: pool}, nil
 }
 

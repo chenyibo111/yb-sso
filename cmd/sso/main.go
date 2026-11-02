@@ -56,9 +56,11 @@ func main() {
 	}
 	sso, err := server.New(server.Config{
 		AppID:         member.AppID,
+		TenantKey:     member.TenantKey,
 		RedirectURI:   os.Getenv("FEISHU_REDIRECT_URI"),
 		HydraAdminURL: "http://localhost:4445",
 		Revocations:   store,
+		Members:       store,
 		TokenVerifier: verifier,
 	}, member)
 	if err != nil {
