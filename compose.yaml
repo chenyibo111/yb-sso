@@ -42,5 +42,33 @@ services:
       hydra-migrate:
         condition: service_completed_successfully
 
+  demo-a:
+    build:
+      context: .
+      dockerfile: Dockerfile.demo
+    command: ["-port", "3100"]
+    environment:
+      HYDRA_DIAL_ADDRESS: host.docker.internal:4444
+      SSO_STATUS_URL: http://host.docker.internal:9000/session-status
+      DEMO_BIND_ADDRESS: 0.0.0.0
+    ports:
+      - "127.0.0.1:3100:3100"
+    depends_on:
+      - hydra
+
+  demo-b:
+    build:
+      context: .
+      dockerfile: Dockerfile.demo
+    command: ["-port", "3101"]
+    environment:
+      HYDRA_DIAL_ADDRESS: host.docker.internal:4444
+      SSO_STATUS_URL: http://host.docker.internal:9000/session-status
+      DEMO_BIND_ADDRESS: 0.0.0.0
+    ports:
+      - "127.0.0.1:3101:3101"
+    depends_on:
+      - hydra
+
 volumes:
   hydra-db:

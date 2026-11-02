@@ -5,6 +5,7 @@ import (
 	"flag"
 	"log"
 	"net/http"
+	"os"
 	"strconv"
 	"time"
 
@@ -18,7 +19,11 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	srv := &http.Server{Addr: "127.0.0.1:" + strconv.Itoa(*port), Handler: h, ReadHeaderTimeout: 5 * time.Second}
+	bind := os.Getenv("DEMO_BIND_ADDRESS")
+	if bind == "" {
+		bind = "127.0.0.1"
+	}
+	srv := &http.Server{Addr: bind + ":" + strconv.Itoa(*port), Handler: h, ReadHeaderTimeout: 5 * time.Second}
 	log.Printf("demo app listening on http://localhost:%d", *port)
 	log.Fatal(srv.ListenAndServe())
 }
