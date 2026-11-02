@@ -45,6 +45,10 @@ func main() {
 	if member.TenantKey == "" {
 		log.Fatal("FEISHU_TENANT_KEY is required")
 	}
+	serviceKey := os.Getenv("SSO_SERVICE_KEY")
+	if len(serviceKey) < 32 {
+		log.Fatal("SSO_SERVICE_KEY must be at least 32 characters")
+	}
 	store, err := session.Open(context.Background(), os.Getenv("SSO_DATABASE_URL"))
 	if err != nil {
 		log.Fatal(err)
@@ -61,6 +65,7 @@ func main() {
 		HydraAdminURL: "http://localhost:4445",
 		Revocations:   store,
 		Members:       store,
+		ServiceKey:    serviceKey,
 		TokenVerifier: verifier,
 	}, member)
 	if err != nil {

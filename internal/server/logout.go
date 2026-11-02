@@ -1,6 +1,9 @@
 package server
 
 import (
+	"crypto/subtle"
+	"encoding/json"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -65,6 +68,46 @@ func (s *Server) sessionStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	revoked, err := s.config.Revocations.Revoked(r.Context(), sid)
+	if err != nil {
+		http.Error(w, "session check unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	if revoked {
+		http.Error(w, "session revoked", http.StatusUnauthorized)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) internalSessionStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	if s.config.ServiceKey == "" || s.config.Revocations == nil {
+		http.Error(w, "session check unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	if subtle.ConstantTimeCompare([]byte(r.Header.Get("X-SSO-Service-Key")), []byte(s.config.ServiceKey)) != 1 {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	var request struct {
+		SID string `json:"sid"`
+	}
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1024))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&request); err != nil || request.SID == "" || len(request.SID) > 255 {
+		http.Error(w, "invalid session ID", http.StatusBadRequest)
+		return
+	}
+	var trailing any
+	if decoder.Decode(&trailing) != io.EOF {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	revoked, err := s.config.Revocations.Revoked(r.Context(), request.SID)
 	if err != nil {
 		http.Error(w, "session check unavailable", http.StatusServiceUnavailable)
 		return

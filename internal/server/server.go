@@ -45,6 +45,7 @@ type Config struct {
 	HydraAdminURL      string
 	Revocations        RevocationStore
 	Members            MemberStore
+	ServiceKey         string
 	TokenVerifier      TokenVerifier
 }
 
@@ -86,6 +87,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.logout(w, r)
 	case "/session-status":
 		s.sessionStatus(w, r)
+	case "/internal/session-status":
+		s.internalSessionStatus(w, r)
 	case "/healthz":
 		w.WriteHeader(http.StatusOK)
 	default:

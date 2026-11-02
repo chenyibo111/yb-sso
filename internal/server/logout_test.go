@@ -5,12 +5,50 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
 type fakeRevocations struct {
 	revoked map[string]bool
 	err     error
+}
+
+func TestInternalSessionStatusRequiresServiceKeyAndChecksRevocation(t *testing.T) {
+	store := &fakeRevocations{revoked: map[string]bool{"sid-revoked": true}}
+	s, err := New(Config{AppID: "cli_test", RedirectURI: "http://localhost:9000/auth/feishu/callback", HydraAdminURL: "http://localhost:4445", Revocations: store, ServiceKey: "test-service-key"}, &fakeFeishu{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name, key, body string
+		want            int
+	}{
+		{"active", "test-service-key", `{"sid":"sid-active"}`, http.StatusNoContent},
+		{"revoked", "test-service-key", `{"sid":"sid-revoked"}`, http.StatusUnauthorized},
+		{"missing key", "", `{"sid":"sid-active"}`, http.StatusUnauthorized},
+		{"wrong key", "wrong", `{"sid":"sid-active"}`, http.StatusUnauthorized},
+		{"missing sid", "test-service-key", `{}`, http.StatusBadRequest},
+		{"invalid body", "test-service-key", `not-json`, http.StatusBadRequest},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := httptest.NewRequest(http.MethodPost, "/internal/session-status", strings.NewReader(tc.body))
+			r.Header.Set("X-SSO-Service-Key", tc.key)
+			w := httptest.NewRecorder()
+			s.ServeHTTP(w, r)
+			if w.Code != tc.want {
+				t.Fatalf("status=%d want=%d", w.Code, tc.want)
+			}
+		})
+	}
+	store.err = errors.New("database down")
+	r := httptest.NewRequest(http.MethodPost, "/internal/session-status", strings.NewReader(`{"sid":"sid-active"}`))
+	r.Header.Set("X-SSO-Service-Key", "test-service-key")
+	w := httptest.NewRecorder()
+	s.ServeHTTP(w, r)
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("database outage status=%d", w.Code)
+	}
 }
 
 func (f *fakeRevocations) Revoke(_ context.Context, sid string) error {
