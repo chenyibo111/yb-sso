@@ -43,6 +43,8 @@ docker run --rm -v "${PWD}:/workspace" -w /workspace -e GOOS=windows -e GOARCH=a
 
 Hydra 与 PostgreSQL 容器使用固定的**本地开发专用**密钥和密码，不能直接用于线上。`demo-a`、`demo-b` 是公开客户端，使用授权码和 PKCE，并登记后端退出通知地址。新增本地项目时，在 Hydra 登记独立客户端 ID、精确回调地址、退出后地址与后端退出地址；如需退出后立即停止访问受保护页面，也需查询本 SSO 的会话撤销状态。
 
+`scripts/register-clients.ps1` 还会登记 `reimbursement-web`，供 `ai-reimbursement-agent` 的 React + Go 迁移入口使用。它请求 `feishu_identity` 范围，SSO 仅在该范围的 ID Token 中加入经企业校验的飞书 `open_id`。报销项目的 Go API 使用同一 `SSO_SERVICE_KEY` 调用 `POST /internal/session-status` 查询会话是否仍有效。联调与端口配置见报销项目的 `docs/operations/local-sso-react.md`。
+
 ## 当前边界
 
 - 成员资格依赖飞书企业自建应用的企业归属与可用范围，并在登录时核对 `tenant_key`。未另外同步通讯录或实现实时禁用事件；已签发的离线令牌不会因此自动撤回。
