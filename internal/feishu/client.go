@@ -8,12 +8,14 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
 
 type Identity struct {
 	OpenID    string `json:"open_id"`
+	UserID    string `json:"user_id"`
 	Name      string `json:"name"`
 	TenantKey string `json:"tenant_key"`
 }
@@ -107,5 +109,32 @@ func (c Client) User(ctx context.Context, code string) (Identity, error) {
 	if user.Code != 0 || user.Data.OpenID == "" || user.Data.TenantKey != c.TenantKey {
 		return Identity{}, errors.New("Feishu member identity unavailable")
 	}
+	var tenantToken struct {
+		Code  int    `json:"code"`
+		Token string `json:"tenant_access_token"`
+	}
+	if err := c.request(ctx, http.MethodPost, "/open-apis/auth/v3/tenant_access_token/internal", "", map[string]string{"app_id": c.AppID, "app_secret": c.AppSecret}, &tenantToken); err != nil {
+		return Identity{}, err
+	}
+	if tenantToken.Code != 0 || tenantToken.Token == "" {
+		return Identity{}, errors.New("Feishu tenant authentication failed")
+	}
+	var contact struct {
+		Code int `json:"code"`
+		Data struct {
+			User struct {
+				OpenID string `json:"open_id"`
+				UserID string `json:"user_id"`
+			} `json:"user"`
+		} `json:"data"`
+	}
+	path := "/open-apis/contact/v3/users/" + url.PathEscape(user.Data.OpenID) + "?user_id_type=open_id"
+	if err := c.request(ctx, http.MethodGet, path, tenantToken.Token, nil, &contact); err != nil {
+		return Identity{}, err
+	}
+	if contact.Code != 0 || contact.Data.User.OpenID != user.Data.OpenID || strings.TrimSpace(contact.Data.User.UserID) == "" {
+		return Identity{}, errors.New("Feishu user ID unavailable")
+	}
+	user.Data.UserID = contact.Data.User.UserID
 	return user.Data, nil
 }

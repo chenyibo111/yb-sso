@@ -42,6 +42,9 @@ func main() {
 		log.Fatal(err)
 	}
 	member := feishu.Client{AppID: os.Getenv("FEISHU_APP_ID"), AppSecret: os.Getenv("FEISHU_APP_SECRET"), TenantKey: os.Getenv("FEISHU_TENANT_KEY")}
+	if len(os.Getenv("SSO_SERVICE_KEY")) < 32 {
+		log.Fatal("SSO_SERVICE_KEY must contain at least 32 characters")
+	}
 	if member.TenantKey == "" {
 		log.Fatal("FEISHU_TENANT_KEY is required")
 	}
@@ -60,6 +63,7 @@ func main() {
 		HydraAdminURL: "http://localhost:4445",
 		Revocations:   store,
 		TokenVerifier: verifier,
+		ServiceKey:    os.Getenv("SSO_SERVICE_KEY"),
 	}, member)
 	if err != nil {
 		log.Fatal(err)

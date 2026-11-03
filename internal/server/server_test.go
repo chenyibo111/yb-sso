@@ -16,7 +16,7 @@ type fakeFeishu struct{ calls int }
 
 func (f *fakeFeishu) User(_ context.Context, code string) (feishu.Identity, error) {
 	f.calls++
-	return feishu.Identity{OpenID: "ou_alice", Name: "Alice"}, nil
+	return feishu.Identity{OpenID: "ou_alice", UserID: "u_alice", TenantKey: "tenant-1", Name: "Alice"}, nil
 }
 
 func TestLoginBindsCallbackToBrowserState(t *testing.T) {
@@ -57,10 +57,14 @@ func TestCallbackAcceptsHydraLoginWithStableSubject(t *testing.T) {
 			t.Errorf("unexpected Hydra call: %s", r.URL)
 		}
 		var body struct {
-			Subject string `json:"subject"`
+			Subject string            `json:"subject"`
+			Context map[string]string `json:"context"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		accepted = body.Subject
+		if body.Context["feishu_user_id"] != "u_alice" || body.Context["feishu_tenant_key"] != "tenant-1" || body.Context["feishu_open_id"] != "ou_alice" || body.Context["feishu_app_id"] != "cli_test" {
+			t.Error("Hydra login context is missing verified member identifiers")
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"redirect_to":"http://localhost:4444/oauth2/auth?login_verifier=ok"}`))
 	}))
@@ -81,5 +85,37 @@ func TestCallbackAcceptsHydraLoginWithStableSubject(t *testing.T) {
 	}
 	if accepted == "" || !strings.HasPrefix(accepted, "fs_") || f.calls != 1 {
 		t.Fatal("Hydra did not receive Feishu member subject")
+	}
+}
+
+func TestConsentCarriesVerifiedMemberClaimsIntoIDToken(t *testing.T) {
+	identity := map[string]string{"feishu_open_id": "ou_alice", "feishu_user_id": "u_alice", "feishu_tenant_key": "tenant-1", "feishu_app_id": "cli_test", "name": "Alice"}
+	var claims map[string]string
+	hydra := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodGet {
+			_ = json.NewEncoder(w).Encode(map[string]any{"requested_scope": []string{"openid", "profile", "feishu_identity"}, "context": identity})
+			return
+		}
+		var body struct {
+			Session struct {
+				IDToken map[string]string `json:"id_token"`
+			} `json:"session"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Error(err)
+		}
+		claims = body.Session.IDToken
+		_, _ = w.Write([]byte(`{"redirect_to":"http://localhost:4444/oauth2/auth?consent_verifier=ok"}`))
+	}))
+	defer hydra.Close()
+	s, err := New(Config{AppID: "cli_test", RedirectURI: "http://localhost:9000/auth/feishu/callback", HydraAdminURL: hydra.URL}, &fakeFeishu{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := httptest.NewRecorder()
+	s.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/consent?consent_challenge=challenge-1", nil))
+	if w.Code != http.StatusFound || claims["feishu_user_id"] != "u_alice" || claims["feishu_open_id"] != "ou_alice" || claims["feishu_tenant_key"] != "tenant-1" || claims["feishu_app_id"] != "cli_test" {
+		t.Fatalf("verified identity claims missing from ID Token: status=%d claims=%v", w.Code, claims)
 	}
 }

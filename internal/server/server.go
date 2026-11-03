@@ -39,6 +39,7 @@ type Config struct {
 	HydraAdminURL      string
 	Revocations        RevocationStore
 	TokenVerifier      TokenVerifier
+	ServiceKey         string
 }
 
 type pendingLogin struct {
@@ -79,6 +80,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.logout(w, r)
 	case "/session-status":
 		s.sessionStatus(w, r)
+	case "/internal/session-status":
+		s.internalSessionStatus(w, r)
 	case "/healthz":
 		w.WriteHeader(http.StatusOK)
 	default:
@@ -158,6 +161,10 @@ func (s *Server) callback(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Feishu login failed", http.StatusBadGateway)
 		return
 	}
+	if member.OpenID == "" || member.UserID == "" || member.TenantKey == "" {
+		http.Error(w, "Feishu member identity incomplete", http.StatusForbidden)
+		return
+	}
 	subject, err := identity.Subject(s.config.AppID, member.OpenID)
 	if err != nil {
 		http.Error(w, "Feishu identity unavailable", http.StatusForbidden)
@@ -167,7 +174,8 @@ func (s *Server) callback(w http.ResponseWriter, r *http.Request) {
 		RedirectTo string `json:"redirect_to"`
 	}
 	path := "/admin/oauth2/auth/requests/login/accept?login_challenge=" + url.QueryEscape(pending.challenge)
-	if err := s.hydra(r.Context(), http.MethodPut, path, map[string]any{"subject": subject, "remember": true, "remember_for": 600}, &result); err != nil {
+	identityContext := map[string]string{"feishu_open_id": member.OpenID, "feishu_user_id": member.UserID, "feishu_tenant_key": member.TenantKey, "feishu_app_id": s.config.AppID, "name": member.Name}
+	if err := s.hydra(r.Context(), http.MethodPut, path, map[string]any{"subject": subject, "context": identityContext, "remember": true, "remember_for": 600}, &result); err != nil {
 		http.Error(w, "SSO login failed", http.StatusBadGateway)
 		return
 	}
@@ -190,7 +198,8 @@ func (s *Server) consent(w http.ResponseWriter, r *http.Request) {
 	}
 	base := "/admin/oauth2/auth/requests/consent?consent_challenge=" + url.QueryEscape(challenge)
 	var request struct {
-		RequestedScope []string `json:"requested_scope"`
+		RequestedScope []string          `json:"requested_scope"`
+		Context        map[string]string `json:"context"`
 	}
 	if err := s.hydra(r.Context(), http.MethodGet, base, nil, &request); err != nil {
 		http.Error(w, "SSO consent failed", http.StatusBadGateway)
@@ -201,16 +210,26 @@ func (s *Server) consent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for _, scope := range request.RequestedScope {
-		if scope != "openid" && scope != "profile" {
+		if scope != "openid" && scope != "profile" && scope != "feishu_identity" {
 			http.Error(w, "unsupported scope", http.StatusForbidden)
 			return
 		}
+	}
+	for _, name := range []string{"feishu_open_id", "feishu_user_id", "feishu_tenant_key", "feishu_app_id"} {
+		if strings.TrimSpace(request.Context[name]) == "" {
+			http.Error(w, "missing verified Feishu identity", http.StatusForbidden)
+			return
+		}
+	}
+	if request.Context["feishu_app_id"] != s.config.AppID {
+		http.Error(w, "wrong Feishu application", http.StatusForbidden)
+		return
 	}
 	var result struct {
 		RedirectTo string `json:"redirect_to"`
 	}
 	accept := "/admin/oauth2/auth/requests/consent/accept?consent_challenge=" + url.QueryEscape(challenge)
-	if err := s.hydra(r.Context(), http.MethodPut, accept, map[string]any{"grant_scope": request.RequestedScope, "remember": true, "remember_for": 600}, &result); err != nil {
+	if err := s.hydra(r.Context(), http.MethodPut, accept, map[string]any{"grant_scope": request.RequestedScope, "session": map[string]any{"id_token": request.Context}, "remember": true, "remember_for": 600}, &result); err != nil {
 		http.Error(w, "SSO consent failed", http.StatusBadGateway)
 		return
 	}

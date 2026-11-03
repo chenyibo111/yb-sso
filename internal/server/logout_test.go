@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -119,5 +120,34 @@ func TestSessionStatusRejectsRevokedOrUnverifiableToken(t *testing.T) {
 	s.ServeHTTP(w, r)
 	if w.Code != http.StatusServiceUnavailable {
 		t.Fatalf("database outage status %d", w.Code)
+	}
+}
+
+func TestInternalSessionStatusRequiresKeyAndChecksRevocation(t *testing.T) {
+	store := &fakeRevocations{revoked: map[string]bool{"sid-revoked": true}}
+	s, _ := newLogoutServer(t, `{"sid":"sid-active"}`, store)
+	s.config.ServiceKey = "test-service-key-at-least-32-characters"
+	call := func(key, body string) int {
+		w := httptest.NewRecorder()
+		r := httptest.NewRequest(http.MethodPost, "/internal/session-status", strings.NewReader(body))
+		r.Header.Set("X-SSO-Service-Key", key)
+		s.ServeHTTP(w, r)
+		return w.Code
+	}
+	if got := call("wrong", `{"sid":"sid-active"}`); got != http.StatusForbidden {
+		t.Fatalf("wrong service key accepted: %d", got)
+	}
+	if got := call(s.config.ServiceKey, `{"sid":"sid-active"}`); got != http.StatusNoContent {
+		t.Fatalf("active session rejected: %d", got)
+	}
+	if got := call(s.config.ServiceKey, `{"sid":"sid-revoked"}`); got != http.StatusUnauthorized {
+		t.Fatalf("revoked session accepted: %d", got)
+	}
+	if got := call(s.config.ServiceKey, `{"sid":""}`); got != http.StatusBadRequest {
+		t.Fatalf("empty session accepted: %d", got)
+	}
+	store.err = errors.New("database down")
+	if got := call(s.config.ServiceKey, `{"sid":"sid-active"}`); got != http.StatusServiceUnavailable {
+		t.Fatalf("store outage accepted: %d", got)
 	}
 }
