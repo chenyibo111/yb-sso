@@ -53,3 +53,7 @@ Hydra 与 PostgreSQL 容器使用固定的**本地开发专用**密钥和密码�
 - 初版登录链路已由两名测试成员验证；加入企业标识校验后，测试企业成员已在项目 A/B 实测登录与统一退出。另一名成员在同时登录时是否保持独立会话，仍建议用独立浏览器会话验证。飞书回调若不接受 localhost，需要调整飞书平台和 `.env` 中的地址，并提供能到达本机的 HTTPS 回调入口。
 
 架构细节见 [设计说明](docs/architecture.md)。
+
+## 持续集成
+
+`.github/workflows/ci.yml` 在 push 和 pull request 时使用临时 PostgreSQL 执行 `go test ./...`、`go vet ./...` 与 SSO 二进制构建。数据库测试会通过 `TEST_DATABASE_URL` 运行；真实飞书授权、Hydra 联调和跨项目退出仍需按上面的本地路径验收。
