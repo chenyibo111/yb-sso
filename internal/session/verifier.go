@@ -14,6 +14,8 @@ import (
 
 type Verifier struct {
 	provider *oidc.Provider
+	issuer   string
+	keySet   oidc.KeySet
 	http     *http.Client
 }
 
@@ -24,6 +26,14 @@ func NewVerifier(ctx context.Context, issuer string) (*Verifier, error) {
 		return nil, err
 	}
 	return &Verifier{provider: provider, http: client}, nil
+}
+
+// NewVerifierWithJWKS validates the public issuer while fetching keys from a
+// container-reachable endpoint. The internal address never becomes an issuer.
+func NewVerifierWithJWKS(ctx context.Context, issuer, jwksURL string) *Verifier {
+	client := &http.Client{Timeout: 10 * time.Second}
+	keySet := oidc.NewRemoteKeySet(oidc.ClientContext(ctx, client), jwksURL)
+	return &Verifier{issuer: issuer, keySet: keySet, http: client}
 }
 
 func (v *Verifier) Verify(ctx context.Context, raw string) (string, error) {
@@ -52,7 +62,13 @@ func (v *Verifier) Verify(ctx context.Context, raw string) (string, error) {
 	if audience == "" {
 		return "", errors.New("invalid ID token audience")
 	}
-	idToken, err := v.provider.Verifier(&oidc.Config{ClientID: audience}).Verify(oidc.ClientContext(ctx, v.http), raw)
+	var verifier *oidc.IDTokenVerifier
+	if v.keySet != nil {
+		verifier = oidc.NewVerifier(v.issuer, v.keySet, &oidc.Config{ClientID: audience})
+	} else {
+		verifier = v.provider.Verifier(&oidc.Config{ClientID: audience})
+	}
+	idToken, err := verifier.Verify(oidc.ClientContext(ctx, v.http), raw)
 	if err != nil {
 		return "", err
 	}

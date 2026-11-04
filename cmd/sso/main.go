@@ -14,6 +14,32 @@ import (
 	"github.com/chenyibo111/yb-sso/internal/session"
 )
 
+type runtimeConfig struct {
+	Issuer      string
+	AdminURL    string
+	JWKSURL     string
+	BindAddress string
+}
+
+func runtimeConfigFromEnv() runtimeConfig {
+	config := runtimeConfig{
+		Issuer:      "http://localhost:4444/",
+		AdminURL:    "http://localhost:4445",
+		BindAddress: "127.0.0.1:9000",
+	}
+	if value := os.Getenv("HYDRA_ISSUER"); value != "" {
+		config.Issuer = value
+	}
+	if value := os.Getenv("HYDRA_ADMIN_URL"); value != "" {
+		config.AdminURL = value
+	}
+	config.JWKSURL = os.Getenv("HYDRA_JWKS_URL")
+	if value := os.Getenv("SSO_BIND_ADDRESS"); value != "" {
+		config.BindAddress = value
+	}
+	return config
+}
+
 func loadLocalEnv(path string) error {
 	f, err := os.Open(path)
 	if os.IsNotExist(err) {
@@ -42,6 +68,7 @@ func main() {
 		log.Fatal(err)
 	}
 	member := feishu.Client{AppID: os.Getenv("FEISHU_APP_ID"), AppSecret: os.Getenv("FEISHU_APP_SECRET"), TenantKey: os.Getenv("FEISHU_TENANT_KEY")}
+	runtime := runtimeConfigFromEnv()
 	if len(os.Getenv("SSO_SERVICE_KEY")) < 32 {
 		log.Fatal("SSO_SERVICE_KEY must contain at least 32 characters")
 	}
@@ -53,14 +80,19 @@ func main() {
 		log.Fatal(err)
 	}
 	defer store.Close()
-	verifier, err := session.NewVerifier(context.Background(), "http://localhost:4444/")
-	if err != nil {
-		log.Fatal(err)
+	var verifier *session.Verifier
+	if runtime.JWKSURL != "" {
+		verifier = session.NewVerifierWithJWKS(context.Background(), runtime.Issuer, runtime.JWKSURL)
+	} else {
+		verifier, err = session.NewVerifier(context.Background(), runtime.Issuer)
+		if err != nil {
+			log.Fatal(err)
+		}
 	}
 	sso, err := server.New(server.Config{
 		AppID:         member.AppID,
 		RedirectURI:   os.Getenv("FEISHU_REDIRECT_URI"),
-		HydraAdminURL: "http://localhost:4445",
+		HydraAdminURL: runtime.AdminURL,
 		Revocations:   store,
 		TokenVerifier: verifier,
 		ServiceKey:    os.Getenv("SSO_SERVICE_KEY"),
@@ -68,7 +100,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	httpServer := &http.Server{Addr: "127.0.0.1:9000", Handler: sso, ReadHeaderTimeout: 5 * time.Second}
-	log.Println("Feishu SSO login service listening on http://localhost:9000")
+	httpServer := &http.Server{Addr: runtime.BindAddress, Handler: sso, ReadHeaderTimeout: 5 * time.Second}
+	log.Printf("Feishu SSO login service listening on %s", runtime.BindAddress)
 	log.Fatal(httpServer.ListenAndServe())
 }
