@@ -10,9 +10,28 @@ import (
 	"testing"
 
 	"github.com/chenyibo111/yb-sso/internal/feishu"
+	"github.com/chenyibo111/yb-sso/internal/identity"
 )
 
 type fakeFeishu struct{ calls int }
+
+type fakeIdentities struct {
+	claims map[string]map[string]string
+	loads  int
+}
+
+func (f *fakeIdentities) Save(_ context.Context, subject string, claims map[string]string) error {
+	if f.claims == nil {
+		f.claims = make(map[string]map[string]string)
+	}
+	f.claims[subject] = claims
+	return nil
+}
+
+func (f *fakeIdentities) Load(_ context.Context, subject string) (map[string]string, error) {
+	f.loads++
+	return f.claims[subject], nil
+}
 
 func (f *fakeFeishu) User(_ context.Context, code string) (feishu.Identity, error) {
 	f.calls++
@@ -21,7 +40,11 @@ func (f *fakeFeishu) User(_ context.Context, code string) (feishu.Identity, erro
 
 func TestLoginBindsCallbackToBrowserState(t *testing.T) {
 	f := &fakeFeishu{}
-	s, err := New(Config{AppID: "cli_test", RedirectURI: "http://localhost:9000/auth/feishu/callback", FeishuAuthorizeURL: "https://open.feishu.cn/open-apis/authen/v1/index", HydraAdminURL: "http://localhost:4445"}, f)
+	hydra := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"skip": false})
+	}))
+	defer hydra.Close()
+	s, err := New(Config{AppID: "cli_test", RedirectURI: "http://localhost:9000/auth/feishu/callback", FeishuAuthorizeURL: "https://open.feishu.cn/open-apis/authen/v1/index", HydraAdminURL: hydra.URL}, f)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,8 +74,13 @@ func TestLoginBindsCallbackToBrowserState(t *testing.T) {
 
 func TestCallbackAcceptsHydraLoginWithStableSubject(t *testing.T) {
 	f := &fakeFeishu{}
+	identities := &fakeIdentities{}
 	var accepted string
 	hydra := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			_ = json.NewEncoder(w).Encode(map[string]any{"skip": false})
+			return
+		}
 		if r.URL.Path != "/admin/oauth2/auth/requests/login/accept" || r.URL.Query().Get("login_challenge") != "challenge-1" {
 			t.Errorf("unexpected Hydra call: %s", r.URL)
 		}
@@ -69,7 +97,7 @@ func TestCallbackAcceptsHydraLoginWithStableSubject(t *testing.T) {
 		_, _ = w.Write([]byte(`{"redirect_to":"http://localhost:4444/oauth2/auth?login_verifier=ok"}`))
 	}))
 	defer hydra.Close()
-	s, err := New(Config{AppID: "cli_test", RedirectURI: "http://localhost:9000/auth/feishu/callback", FeishuAuthorizeURL: "https://open.feishu.cn/open-apis/authen/v1/index", HydraAdminURL: hydra.URL}, f)
+	s, err := New(Config{AppID: "cli_test", RedirectURI: "http://localhost:9000/auth/feishu/callback", FeishuAuthorizeURL: "https://open.feishu.cn/open-apis/authen/v1/index", HydraAdminURL: hydra.URL, Identities: identities}, f)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,6 +113,119 @@ func TestCallbackAcceptsHydraLoginWithStableSubject(t *testing.T) {
 	}
 	if accepted == "" || !strings.HasPrefix(accepted, "fs_") || f.calls != 1 {
 		t.Fatal("Hydra did not receive Feishu member subject")
+	}
+	if stored := identities.claims[accepted]; stored["feishu_open_id"] != "ou_alice" || stored["email"] != "alice@example.com" {
+		t.Fatal("verified Feishu identity was not saved for a later Hydra login")
+	}
+}
+
+func TestLoginReusesRememberedHydraSubjectWithVerifiedIdentity(t *testing.T) {
+	subject, err := identity.Subject("cli_test", "ou_alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	identities := &fakeIdentities{claims: map[string]map[string]string{subject: {
+		"feishu_open_id": "ou_alice", "feishu_user_id": "u_alice", "feishu_tenant_key": "tenant-1", "feishu_app_id": "cli_test", "name": "Alice",
+	}}}
+	var accepted struct {
+		Subject string            `json:"subject"`
+		Context map[string]string `json:"context"`
+	}
+	hydra := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodGet {
+			_ = json.NewEncoder(w).Encode(map[string]any{"skip": true, "subject": subject})
+			return
+		}
+		_ = json.NewDecoder(r.Body).Decode(&accepted)
+		_, _ = w.Write([]byte(`{"redirect_to":"http://localhost:4444/oauth2/auth?login_verifier=ok"}`))
+	}))
+	defer hydra.Close()
+	feishu := &fakeFeishu{}
+	s, err := New(Config{AppID: "cli_test", RedirectURI: "http://localhost:9000/auth/feishu/callback", HydraAdminURL: hydra.URL, Identities: identities}, feishu)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := httptest.NewRecorder()
+	s.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/login?login_challenge=remembered", nil))
+	if w.Code != http.StatusFound || accepted.Subject != subject || accepted.Context["feishu_open_id"] != "ou_alice" || identities.loads != 1 || feishu.calls != 0 {
+		t.Fatalf("remembered login failed: status=%d accepted=%+v loads=%d feishu=%d", w.Code, accepted, identities.loads, feishu.calls)
+	}
+}
+
+func TestLoginDoesNotAcceptRememberedSubjectWithoutVerifiedIdentity(t *testing.T) {
+	hydra := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			_ = json.NewEncoder(w).Encode(map[string]any{"skip": true, "subject": "fs_unknown", "request_url": "http://localhost:4444/oauth2/auth?prompt=none"})
+			return
+		}
+		if r.URL.Path != "/admin/oauth2/auth/requests/login/reject" {
+			t.Error("unverified subject accepted")
+		}
+		var body map[string]string
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if body["error"] != "login_required" {
+			t.Errorf("unexpected Hydra rejection: %v", body)
+		}
+		_, _ = w.Write([]byte(`{"redirect_to":"http://localhost:8080/auth/feishu/callback?error=login_required&state=test"}`))
+	}))
+	defer hydra.Close()
+	s, err := New(Config{AppID: "cli_test", RedirectURI: "http://localhost:9000/auth/feishu/callback", HydraAdminURL: hydra.URL, Identities: &fakeIdentities{}}, &fakeFeishu{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := httptest.NewRecorder()
+	s.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/login?login_challenge=remembered", nil))
+	if w.Code != http.StatusFound || !strings.Contains(w.Header().Get("Location"), "error=login_required") {
+		t.Fatalf("unverified silent login status=%d location=%q", w.Code, w.Header().Get("Location"))
+	}
+}
+
+func TestLoginReverifiesLegacyHydraSessionWithoutIdentityRecord(t *testing.T) {
+	hydra := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Error("unverified subject accepted")
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"skip": true, "subject": "fs_old", "request_url": "http://localhost:4444/oauth2/auth?scope=openid"})
+	}))
+	defer hydra.Close()
+	s, err := New(Config{AppID: "cli_test", RedirectURI: "http://localhost:9000/auth/feishu/callback", HydraAdminURL: hydra.URL, Identities: &fakeIdentities{}}, &fakeFeishu{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := httptest.NewRecorder()
+	s.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/login?login_challenge=legacy", nil))
+	if w.Code != http.StatusFound || !strings.HasPrefix(w.Header().Get("Location"), "https://open.feishu.cn/") {
+		t.Fatalf("legacy session was not reverified: status=%d location=%q", w.Code, w.Header().Get("Location"))
+	}
+}
+
+func TestLoginPromptNoneWithoutRememberedSessionDoesNotOpenFeishu(t *testing.T) {
+	hydra := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			_ = json.NewEncoder(w).Encode(map[string]any{"skip": false, "request_url": "http://localhost:4444/oauth2/auth?prompt=none"})
+			return
+		}
+		if r.URL.Path != "/admin/oauth2/auth/requests/login/reject" {
+			t.Errorf("unexpected Hydra request: %s", r.URL)
+		}
+		var body map[string]string
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if body["error"] != "login_required" {
+			t.Errorf("unexpected rejection: %v", body)
+		}
+		_, _ = w.Write([]byte(`{"redirect_to":"http://localhost:8080/auth/feishu/callback?error=login_required&state=test"}`))
+	}))
+	defer hydra.Close()
+	feishu := &fakeFeishu{}
+	s, err := New(Config{AppID: "cli_test", RedirectURI: "http://localhost:9000/auth/feishu/callback", HydraAdminURL: hydra.URL}, feishu)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := httptest.NewRecorder()
+	s.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/login?login_challenge=silent", nil))
+	if w.Code != http.StatusFound || !strings.Contains(w.Header().Get("Location"), "error=login_required") || feishu.calls != 0 {
+		t.Fatalf("prompt=none opened interactive login: status=%d location=%q calls=%d", w.Code, w.Header().Get("Location"), feishu.calls)
 	}
 }
 
