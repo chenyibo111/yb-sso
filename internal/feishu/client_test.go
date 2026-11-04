@@ -42,7 +42,7 @@ func TestUserExchangesCodeAndGetsIdentity(t *testing.T) {
 			if r.URL.Query().Get("user_id_type") != "open_id" || r.Header.Get("Authorization") != "Bearer tenant-token" {
 				t.Error("contact lookup must use the SSO application token and open_id type")
 			}
-			_, _ = w.Write([]byte(`{"code":0,"data":{"user":{"open_id":"ou_alice","user_id":"u_alice"}}}`))
+			_, _ = w.Write([]byte(`{"code":0,"data":{"user":{"open_id":"ou_alice","user_id":"u_alice","email":"alice@example.com"}}}`))
 		default:
 			http.NotFound(w, r)
 		}
@@ -55,6 +55,9 @@ func TestUserExchangesCodeAndGetsIdentity(t *testing.T) {
 	}
 	if got.OpenID != "ou_alice" || got.Name != "Alice" || got.TenantKey != "tenant-1" || got.UserID != "u_alice" {
 		t.Fatalf("unexpected identity: %#v", got)
+	}
+	if got.Email != "alice@example.com" {
+		t.Fatalf("work email = %q", got.Email)
 	}
 	if len(calls) != 5 {
 		t.Fatalf("expected 5 API calls, got %d", len(calls))

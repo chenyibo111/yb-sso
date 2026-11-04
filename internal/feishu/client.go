@@ -18,6 +18,7 @@ type Identity struct {
 	UserID    string `json:"user_id"`
 	Name      string `json:"name"`
 	TenantKey string `json:"tenant_key"`
+	Email     string `json:"email"`
 }
 
 type Client struct {
@@ -125,6 +126,7 @@ func (c Client) User(ctx context.Context, code string) (Identity, error) {
 			User struct {
 				OpenID string `json:"open_id"`
 				UserID string `json:"user_id"`
+				Email  string `json:"email"`
 			} `json:"user"`
 		} `json:"data"`
 	}
@@ -136,5 +138,8 @@ func (c Client) User(ctx context.Context, code string) (Identity, error) {
 		return Identity{}, errors.New("Feishu user ID unavailable")
 	}
 	user.Data.UserID = contact.Data.User.UserID
+	if email := strings.ToLower(strings.TrimSpace(contact.Data.User.Email)); email != "" {
+		user.Data.Email = email
+	}
 	return user.Data, nil
 }

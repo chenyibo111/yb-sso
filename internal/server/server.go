@@ -175,6 +175,9 @@ func (s *Server) callback(w http.ResponseWriter, r *http.Request) {
 	}
 	path := "/admin/oauth2/auth/requests/login/accept?login_challenge=" + url.QueryEscape(pending.challenge)
 	identityContext := map[string]string{"feishu_open_id": member.OpenID, "feishu_user_id": member.UserID, "feishu_tenant_key": member.TenantKey, "feishu_app_id": s.config.AppID, "name": member.Name}
+	if email := strings.ToLower(strings.TrimSpace(member.Email)); email != "" {
+		identityContext["email"] = email
+	}
 	if err := s.hydra(r.Context(), http.MethodPut, path, map[string]any{"subject": subject, "context": identityContext, "remember": true, "remember_for": 600}, &result); err != nil {
 		http.Error(w, "SSO login failed", http.StatusBadGateway)
 		return
@@ -209,10 +212,14 @@ func (s *Server) consent(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "missing scope", http.StatusBadRequest)
 		return
 	}
+	emailScope := false
 	for _, scope := range request.RequestedScope {
-		if scope != "openid" && scope != "profile" && scope != "feishu_identity" {
+		if scope != "openid" && scope != "profile" && scope != "email" && scope != "feishu_identity" {
 			http.Error(w, "unsupported scope", http.StatusForbidden)
 			return
+		}
+		if scope == "email" {
+			emailScope = true
 		}
 	}
 	for _, name := range []string{"feishu_open_id", "feishu_user_id", "feishu_tenant_key", "feishu_app_id"} {
@@ -228,8 +235,20 @@ func (s *Server) consent(w http.ResponseWriter, r *http.Request) {
 	var result struct {
 		RedirectTo string `json:"redirect_to"`
 	}
+	claims := make(map[string]any, len(request.Context)+1)
+	for key, value := range request.Context {
+		if key != "email" {
+			claims[key] = value
+		}
+	}
+	if emailScope {
+		if email := strings.TrimSpace(request.Context["email"]); email != "" {
+			claims["email"] = email
+			claims["email_verified"] = false
+		}
+	}
 	accept := "/admin/oauth2/auth/requests/consent/accept?consent_challenge=" + url.QueryEscape(challenge)
-	if err := s.hydra(r.Context(), http.MethodPut, accept, map[string]any{"grant_scope": request.RequestedScope, "session": map[string]any{"id_token": request.Context}, "remember": true, "remember_for": 600}, &result); err != nil {
+	if err := s.hydra(r.Context(), http.MethodPut, accept, map[string]any{"grant_scope": request.RequestedScope, "session": map[string]any{"id_token": claims}, "remember": true, "remember_for": 600}, &result); err != nil {
 		http.Error(w, "SSO consent failed", http.StatusBadGateway)
 		return
 	}

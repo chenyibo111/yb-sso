@@ -16,7 +16,7 @@ type fakeFeishu struct{ calls int }
 
 func (f *fakeFeishu) User(_ context.Context, code string) (feishu.Identity, error) {
 	f.calls++
-	return feishu.Identity{OpenID: "ou_alice", UserID: "u_alice", TenantKey: "tenant-1", Name: "Alice"}, nil
+	return feishu.Identity{OpenID: "ou_alice", UserID: "u_alice", TenantKey: "tenant-1", Name: "Alice", Email: "Alice@Example.COM"}, nil
 }
 
 func TestLoginBindsCallbackToBrowserState(t *testing.T) {
@@ -62,7 +62,7 @@ func TestCallbackAcceptsHydraLoginWithStableSubject(t *testing.T) {
 		}
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		accepted = body.Subject
-		if body.Context["feishu_user_id"] != "u_alice" || body.Context["feishu_tenant_key"] != "tenant-1" || body.Context["feishu_open_id"] != "ou_alice" || body.Context["feishu_app_id"] != "cli_test" {
+		if body.Context["feishu_user_id"] != "u_alice" || body.Context["feishu_tenant_key"] != "tenant-1" || body.Context["feishu_open_id"] != "ou_alice" || body.Context["feishu_app_id"] != "cli_test" || body.Context["email"] != "alice@example.com" {
 			t.Error("Hydra login context is missing verified member identifiers")
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -88,18 +88,54 @@ func TestCallbackAcceptsHydraLoginWithStableSubject(t *testing.T) {
 	}
 }
 
-func TestConsentCarriesVerifiedMemberClaimsIntoIDToken(t *testing.T) {
-	identity := map[string]string{"feishu_open_id": "ou_alice", "feishu_user_id": "u_alice", "feishu_tenant_key": "tenant-1", "feishu_app_id": "cli_test", "name": "Alice"}
-	var claims map[string]string
+func TestConsentOmitsEmailWithoutScope(t *testing.T) {
+	identity := map[string]string{"feishu_open_id": "ou_alice", "feishu_user_id": "u_alice", "feishu_tenant_key": "tenant-1", "feishu_app_id": "cli_test", "email": "alice@example.com"}
+	var claims map[string]any
 	hydra := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if r.Method == http.MethodGet {
-			_ = json.NewEncoder(w).Encode(map[string]any{"requested_scope": []string{"openid", "profile", "feishu_identity"}, "context": identity})
+			_ = json.NewEncoder(w).Encode(map[string]any{"requested_scope": []string{"openid", "profile"}, "context": identity})
 			return
 		}
 		var body struct {
 			Session struct {
-				IDToken map[string]string `json:"id_token"`
+				IDToken map[string]any `json:"id_token"`
+			} `json:"session"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		claims = body.Session.IDToken
+		_, _ = w.Write([]byte(`{"redirect_to":"http://localhost:4444/oauth2/auth?consent_verifier=ok"}`))
+	}))
+	defer hydra.Close()
+	s, err := New(Config{AppID: "cli_test", RedirectURI: "http://localhost:9000/auth/feishu/callback", HydraAdminURL: hydra.URL}, &fakeFeishu{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := httptest.NewRecorder()
+	s.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/consent?consent_challenge=c", nil))
+	if w.Code != http.StatusFound {
+		t.Fatalf("consent status = %d", w.Code)
+	}
+	if _, ok := claims["email"]; ok {
+		t.Fatal("email leaked without scope")
+	}
+	if _, ok := claims["email_verified"]; ok {
+		t.Fatal("email_verified leaked without scope")
+	}
+}
+
+func TestConsentCarriesVerifiedMemberClaimsIntoIDToken(t *testing.T) {
+	identity := map[string]string{"feishu_open_id": "ou_alice", "feishu_user_id": "u_alice", "feishu_tenant_key": "tenant-1", "feishu_app_id": "cli_test", "name": "Alice", "email": "alice@example.com"}
+	var claims map[string]any
+	hydra := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodGet {
+			_ = json.NewEncoder(w).Encode(map[string]any{"requested_scope": []string{"openid", "profile", "email", "feishu_identity"}, "context": identity})
+			return
+		}
+		var body struct {
+			Session struct {
+				IDToken map[string]any `json:"id_token"`
 			} `json:"session"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -115,7 +151,7 @@ func TestConsentCarriesVerifiedMemberClaimsIntoIDToken(t *testing.T) {
 	}
 	w := httptest.NewRecorder()
 	s.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/consent?consent_challenge=challenge-1", nil))
-	if w.Code != http.StatusFound || claims["feishu_user_id"] != "u_alice" || claims["feishu_open_id"] != "ou_alice" || claims["feishu_tenant_key"] != "tenant-1" || claims["feishu_app_id"] != "cli_test" {
+	if w.Code != http.StatusFound || claims["feishu_user_id"] != "u_alice" || claims["feishu_open_id"] != "ou_alice" || claims["feishu_tenant_key"] != "tenant-1" || claims["feishu_app_id"] != "cli_test" || claims["email"] != "alice@example.com" || claims["email_verified"] != false {
 		t.Fatalf("verified identity claims missing from ID Token: status=%d claims=%v", w.Code, claims)
 	}
 }
