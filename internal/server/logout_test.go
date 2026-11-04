@@ -40,9 +40,10 @@ func (fakeTokenVerifier) Verify(_ context.Context, raw string) (string, error) {
 	return "sid-a", nil
 }
 
-func newLogoutServer(t *testing.T, response string, store *fakeRevocations) (*Server, *int) {
+func newLogoutServer(t *testing.T, response string, store *fakeRevocations) (*Server, *int, *int) {
 	t.Helper()
 	accepts := new(int)
+	deletes := new(int)
 	hydra := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method + " " + r.URL.Path {
 		case "GET /admin/oauth2/auth/requests/logout":
@@ -52,6 +53,12 @@ func newLogoutServer(t *testing.T, response string, store *fakeRevocations) (*Se
 			*accepts++
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"redirect_to":"http://localhost:4444/oauth2/sessions/logout?logout_verifier=ok"}`))
+		case "DELETE /admin/oauth2/auth/sessions/login":
+			if r.URL.Query().Get("sid") != "sid-a" {
+				t.Errorf("wrong Hydra session revoked: %q", r.URL.Query().Get("sid"))
+			}
+			*deletes++
+			w.WriteHeader(http.StatusNoContent)
 		default:
 			http.NotFound(w, r)
 		}
@@ -61,21 +68,21 @@ func newLogoutServer(t *testing.T, response string, store *fakeRevocations) (*Se
 	if err != nil {
 		t.Fatal(err)
 	}
-	return s, accepts
+	return s, accepts, deletes
 }
 
 func TestLogoutRevokesHydraSessionBeforeAccept(t *testing.T) {
 	store := &fakeRevocations{}
-	s, accepts := newLogoutServer(t, `{"subject":"fs_alice","sid":"sid-a"}`, store)
+	s, accepts, deletes := newLogoutServer(t, `{"subject":"fs_alice","sid":"sid-a"}`, store)
 	w := httptest.NewRecorder()
 	s.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/logout?logout_challenge=challenge", nil))
-	if w.Code != http.StatusFound || !store.revoked["sid-a"] || *accepts != 1 {
-		t.Fatalf("logout failed: status=%d revoked=%v accepts=%d", w.Code, store.revoked, *accepts)
+	if w.Code != http.StatusFound || !store.revoked["sid-a"] || *deletes != 1 || *accepts != 1 {
+		t.Fatalf("logout failed: status=%d revoked=%v deletes=%d accepts=%d", w.Code, store.revoked, *deletes, *accepts)
 	}
 }
 
 func TestLogoutRejectsMissingSID(t *testing.T) {
-	s, accepts := newLogoutServer(t, `{"subject":"fs_alice"}`, &fakeRevocations{})
+	s, accepts, _ := newLogoutServer(t, `{"subject":"fs_alice"}`, &fakeRevocations{})
 	w := httptest.NewRecorder()
 	s.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/logout?logout_challenge=challenge", nil))
 	if w.Code != http.StatusBadGateway || *accepts != 0 {
@@ -84,7 +91,7 @@ func TestLogoutRejectsMissingSID(t *testing.T) {
 }
 
 func TestLogoutDoesNotAcceptWhenRevocationFails(t *testing.T) {
-	s, accepts := newLogoutServer(t, `{"subject":"fs_alice","sid":"sid-a"}`, &fakeRevocations{err: errors.New("database down")})
+	s, accepts, _ := newLogoutServer(t, `{"subject":"fs_alice","sid":"sid-a"}`, &fakeRevocations{err: errors.New("database down")})
 	w := httptest.NewRecorder()
 	s.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/logout?logout_challenge=challenge", nil))
 	if w.Code != http.StatusServiceUnavailable || *accepts != 0 {
@@ -94,7 +101,7 @@ func TestLogoutDoesNotAcceptWhenRevocationFails(t *testing.T) {
 
 func TestSessionStatusRejectsRevokedOrUnverifiableToken(t *testing.T) {
 	store := &fakeRevocations{revoked: map[string]bool{"sid-a": true}}
-	s, _ := newLogoutServer(t, `{"sid":"sid-a"}`, store)
+	s, _, _ := newLogoutServer(t, `{"sid":"sid-a"}`, store)
 	for _, tc := range []struct {
 		token string
 		want  int
@@ -125,7 +132,7 @@ func TestSessionStatusRejectsRevokedOrUnverifiableToken(t *testing.T) {
 
 func TestInternalSessionStatusRequiresKeyAndChecksRevocation(t *testing.T) {
 	store := &fakeRevocations{revoked: map[string]bool{"sid-revoked": true}}
-	s, _ := newLogoutServer(t, `{"sid":"sid-active"}`, store)
+	s, _, _ := newLogoutServer(t, `{"sid":"sid-active"}`, store)
 	s.config.ServiceKey = "test-service-key-at-least-32-characters"
 	call := func(key, body string) int {
 		w := httptest.NewRecorder()

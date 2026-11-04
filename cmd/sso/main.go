@@ -94,6 +94,7 @@ func main() {
 		RedirectURI:   os.Getenv("FEISHU_REDIRECT_URI"),
 		HydraAdminURL: runtime.AdminURL,
 		Revocations:   store,
+		Identities:    store,
 		TokenVerifier: verifier,
 		ServiceKey:    os.Getenv("SSO_SERVICE_KEY"),
 	}, member)

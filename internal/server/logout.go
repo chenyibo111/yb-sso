@@ -78,6 +78,10 @@ func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "logout unavailable", http.StatusServiceUnavailable)
 		return
 	}
+	if err := s.revokeHydraLoginSession(r.Context(), request.SID); err != nil {
+		http.Error(w, "logout unavailable", http.StatusServiceUnavailable)
+		return
+	}
 	var result struct {
 		RedirectTo string `json:"redirect_to"`
 	}

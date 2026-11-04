@@ -28,6 +28,11 @@ type RevocationStore interface {
 	Revoked(context.Context, string) (bool, error)
 }
 
+type IdentityStore interface {
+	Save(context.Context, string, map[string]string) error
+	Load(context.Context, string) (map[string]string, error)
+}
+
 type TokenVerifier interface {
 	Verify(context.Context, string) (string, error)
 }
@@ -38,6 +43,7 @@ type Config struct {
 	FeishuAuthorizeURL string
 	HydraAdminURL      string
 	Revocations        RevocationStore
+	Identities         IdentityStore
 	TokenVerifier      TokenVerifier
 	ServiceKey         string
 }
@@ -107,6 +113,71 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "missing login challenge", http.StatusBadRequest)
 		return
 	}
+	var request struct {
+		Skip       bool   `json:"skip"`
+		Subject    string `json:"subject"`
+		SessionID  string `json:"session_id"`
+		RequestURL string `json:"request_url"`
+	}
+	path := "/admin/oauth2/auth/requests/login?login_challenge=" + url.QueryEscape(challenge)
+	if err := s.hydra(r.Context(), http.MethodGet, path, nil, &request); err != nil {
+		http.Error(w, "SSO login unavailable", http.StatusBadGateway)
+		return
+	}
+	requested, _ := url.Parse(request.RequestURL)
+	silent := requested != nil && requested.Query().Get("prompt") == "none"
+	if silent && !request.Skip {
+		s.rejectLoginRequired(w, r, challenge)
+		return
+	}
+	if request.Skip {
+		if s.config.Revocations != nil {
+			if request.SessionID == "" {
+				http.Error(w, "SSO login unavailable", http.StatusServiceUnavailable)
+				return
+			}
+			revoked, err := s.config.Revocations.Revoked(r.Context(), request.SessionID)
+			if err != nil {
+				http.Error(w, "SSO login unavailable", http.StatusServiceUnavailable)
+				return
+			}
+			if revoked {
+				if err := s.revokeHydraLoginSession(r.Context(), request.SessionID); err != nil {
+					http.Error(w, "SSO login unavailable", http.StatusServiceUnavailable)
+					return
+				}
+				s.rejectLoginRequired(w, r, challenge)
+				return
+			}
+		}
+		var claims map[string]string
+		if request.Subject != "" && s.config.Identities != nil {
+			var err error
+			claims, err = s.config.Identities.Load(r.Context(), request.Subject)
+			if err != nil {
+				http.Error(w, "SSO login unavailable", http.StatusServiceUnavailable)
+				return
+			}
+		}
+		verifiedSubject, err := identity.Subject(claims["feishu_app_id"], claims["feishu_open_id"])
+		if err != nil || verifiedSubject != request.Subject || claims["feishu_app_id"] != s.config.AppID || claims["feishu_user_id"] == "" || claims["feishu_tenant_key"] == "" {
+			if silent {
+				s.rejectLoginRequired(w, r, challenge)
+				return
+			}
+		} else {
+			var result struct {
+				RedirectTo string `json:"redirect_to"`
+			}
+			path = "/admin/oauth2/auth/requests/login/accept?login_challenge=" + url.QueryEscape(challenge)
+			if err := s.hydra(r.Context(), http.MethodPut, path, map[string]any{"subject": request.Subject, "context": claims, "remember": true, "remember_for": 600}, &result); err != nil || result.RedirectTo == "" {
+				http.Error(w, "SSO login failed", http.StatusBadGateway)
+				return
+			}
+			http.Redirect(w, r, result.RedirectTo, http.StatusFound)
+			return
+		}
+	}
 	state, err := randomState()
 	if err != nil {
 		http.Error(w, "login unavailable", http.StatusInternalServerError)
@@ -133,6 +204,23 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	q.Set("state", state)
 	auth.RawQuery = q.Encode()
 	http.Redirect(w, r, auth.String(), http.StatusFound)
+}
+
+func (s *Server) revokeHydraLoginSession(ctx context.Context, sid string) error {
+	path := "/admin/oauth2/auth/sessions/login?sid=" + url.QueryEscape(sid)
+	return s.hydra(ctx, http.MethodDelete, path, nil, nil)
+}
+
+func (s *Server) rejectLoginRequired(w http.ResponseWriter, r *http.Request, challenge string) {
+	var result struct {
+		RedirectTo string `json:"redirect_to"`
+	}
+	path := "/admin/oauth2/auth/requests/login/reject?login_challenge=" + url.QueryEscape(challenge)
+	if err := s.hydra(r.Context(), http.MethodPut, path, map[string]string{"error": "login_required"}, &result); err != nil || result.RedirectTo == "" {
+		http.Error(w, "SSO login failed", http.StatusBadGateway)
+		return
+	}
+	http.Redirect(w, r, result.RedirectTo, http.StatusFound)
 }
 
 func (s *Server) callback(w http.ResponseWriter, r *http.Request) {
@@ -177,6 +265,12 @@ func (s *Server) callback(w http.ResponseWriter, r *http.Request) {
 	identityContext := map[string]string{"feishu_open_id": member.OpenID, "feishu_user_id": member.UserID, "feishu_tenant_key": member.TenantKey, "feishu_app_id": s.config.AppID, "name": member.Name}
 	if email := strings.ToLower(strings.TrimSpace(member.Email)); email != "" {
 		identityContext["email"] = email
+	}
+	if s.config.Identities != nil {
+		if err := s.config.Identities.Save(r.Context(), subject, identityContext); err != nil {
+			http.Error(w, "SSO login unavailable", http.StatusServiceUnavailable)
+			return
+		}
 	}
 	if err := s.hydra(r.Context(), http.MethodPut, path, map[string]any{"subject": subject, "context": identityContext, "remember": true, "remember_for": 600}, &result); err != nil {
 		http.Error(w, "SSO login failed", http.StatusBadGateway)
@@ -280,6 +374,9 @@ func (s *Server) hydra(ctx context.Context, method, path string, body any, out a
 		return fmt.Errorf("Hydra request failed: %w", err)
 	}
 	defer resp.Body.Close()
+	if method == http.MethodDelete && out == nil && resp.StatusCode == http.StatusNoContent {
+		return nil
+	}
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("Hydra returned HTTP %d", resp.StatusCode)
 	}
