@@ -51,7 +51,7 @@
 
 **Files:** Modify `scripts/register-clients.ps1`, `README.md`, `.env.example`; create `scripts/register-clients.test.ps1`.
 
-**Interfaces:** Client ID `multica-web`; scopes `openid profile email feishu_identity`; browser callback `http://localhost:8080/auth/feishu/callback`; authorization code + PKCE; logout redirect `http://localhost:3000/login`.
+**Interfaces:** Client ID `multica-web`; scopes `openid profile email feishu_identity`; browser callback `http://localhost:8080/auth/feishu/callback`; authorization code + PKCE; logout redirect `http://localhost:8080/auth/feishu/logged-out` on the same origin, then Multica redirects to its web login page.
 
 - [ ] Create `scripts/register-clients.test.ps1` with a mocked Hydra Admin API; assert a second registration run makes no changes and preserves existing demo/reimbursement client settings.
 - [ ] Run that check and confirm it fails before the Multica entry is added.

@@ -24,6 +24,8 @@ go run ./cmd/sso
 
 `docker compose` 会启动 PostgreSQL、Hydra 和项目 A/B。Go 登录服务仍运行在本机，单独占用一个终端。
 
+`register-clients.ps1` 还会登记 Multica 的本地 OIDC 客户端 `multica-web`：授权码回调为 `http://localhost:8080/auth/feishu/callback`，退出回调为 `http://localhost:8080/auth/feishu/logged-out`（再跳转到网页登录页），允许 `openid profile email feishu_identity` scope。Multica 以 PKCE 发起授权请求；飞书工作邮箱通过 `email` claim 传递，`email_verified` 为 `false`。
+
 若 Windows 尚未安装 Go，可用已有的 Go Docker 镜像编译 Windows 程序：
 
 ```powershell
