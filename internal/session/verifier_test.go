@@ -62,3 +62,32 @@ func TestVerifierAcceptsSignedIDTokenAndRejectsMissingSID(t *testing.T) {
 		t.Fatal("accepted unsigned token")
 	}
 }
+
+func TestVerifierUsesInternalJWKSButRequiresPublicIssuer(t *testing.T) {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	jwks := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(jose.JSONWebKeySet{Keys: []jose.JSONWebKey{{Key: &key.PublicKey, KeyID: "key-1", Algorithm: string(jose.RS256), Use: "sig"}}})
+	}))
+	defer jwks.Close()
+	signer, err := jose.NewSigner(jose.SigningKey{Algorithm: jose.RS256, Key: jose.JSONWebKey{Key: key, KeyID: "key-1"}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	makeToken := func(issuer string) string {
+		token, err := jwt.Signed(signer).Claims(map[string]any{"iss": issuer, "aud": "multica-web", "sub": "fs_alice", "sid": "sid-a", "iat": time.Now().Unix(), "exp": time.Now().Add(time.Hour).Unix()}).Serialize()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return token
+	}
+	verifier := NewVerifierWithJWKS(context.Background(), "http://localhost:4444/", jwks.URL)
+	if sid, err := verifier.Verify(context.Background(), makeToken("http://localhost:4444/")); err != nil || sid != "sid-a" {
+		t.Fatalf("public issuer token rejected: sid=%q err=%v", sid, err)
+	}
+	if _, err := verifier.Verify(context.Background(), makeToken("http://hydra:4444/")); err == nil {
+		t.Fatal("internal issuer accepted")
+	}
+}
