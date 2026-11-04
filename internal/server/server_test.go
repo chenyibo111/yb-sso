@@ -153,6 +153,49 @@ func TestLoginReusesRememberedHydraSubjectWithVerifiedIdentity(t *testing.T) {
 	}
 }
 
+func TestLoginRejectsRevokedRememberedSessionAndClearsHydraSession(t *testing.T) {
+	subject, err := identity.Subject("cli_test", "ou_alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	identities := &fakeIdentities{claims: map[string]map[string]string{subject: {
+		"feishu_open_id": "ou_alice", "feishu_user_id": "u_alice", "feishu_tenant_key": "tenant-1", "feishu_app_id": "cli_test",
+	}}}
+	deleted, rejected, accepted := false, false, false
+	hydra := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method + " " + r.URL.Path {
+		case "GET /admin/oauth2/auth/requests/login":
+			_ = json.NewEncoder(w).Encode(map[string]any{"skip": true, "subject": subject, "session_id": "sid-revoked", "request_url": "http://localhost:4444/oauth2/auth?prompt=none"})
+		case "DELETE /admin/oauth2/auth/sessions/login":
+			if r.URL.Query().Get("sid") != "sid-revoked" {
+				t.Errorf("wrong session revoked: %q", r.URL.Query().Get("sid"))
+			}
+			deleted = true
+			w.WriteHeader(http.StatusNoContent)
+		case "PUT /admin/oauth2/auth/requests/login/reject":
+			if !deleted {
+				t.Error("login rejected before Hydra session was revoked")
+			}
+			rejected = true
+			_, _ = w.Write([]byte(`{"redirect_to":"http://localhost:8088/api/auth/sso/callback?error=login_required&state=test"}`))
+		case "PUT /admin/oauth2/auth/requests/login/accept":
+			accepted = true
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer hydra.Close()
+	s, err := New(Config{AppID: "cli_test", RedirectURI: "http://localhost:9000/auth/feishu/callback", HydraAdminURL: hydra.URL, Identities: identities, Revocations: &fakeRevocations{revoked: map[string]bool{"sid-revoked": true}}}, &fakeFeishu{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := httptest.NewRecorder()
+	s.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/login?login_challenge=revoked", nil))
+	if w.Code != http.StatusFound || !deleted || !rejected || accepted {
+		t.Fatalf("revoked login status=%d deleted=%v rejected=%v accepted=%v", w.Code, deleted, rejected, accepted)
+	}
+}
+
 func TestLoginDoesNotAcceptRememberedSubjectWithoutVerifiedIdentity(t *testing.T) {
 	hydra := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet {

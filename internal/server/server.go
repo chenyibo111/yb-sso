@@ -116,6 +116,7 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	var request struct {
 		Skip       bool   `json:"skip"`
 		Subject    string `json:"subject"`
+		SessionID  string `json:"session_id"`
 		RequestURL string `json:"request_url"`
 	}
 	path := "/admin/oauth2/auth/requests/login?login_challenge=" + url.QueryEscape(challenge)
@@ -130,6 +131,25 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if request.Skip {
+		if s.config.Revocations != nil {
+			if request.SessionID == "" {
+				http.Error(w, "SSO login unavailable", http.StatusServiceUnavailable)
+				return
+			}
+			revoked, err := s.config.Revocations.Revoked(r.Context(), request.SessionID)
+			if err != nil {
+				http.Error(w, "SSO login unavailable", http.StatusServiceUnavailable)
+				return
+			}
+			if revoked {
+				if err := s.revokeHydraLoginSession(r.Context(), request.SessionID); err != nil {
+					http.Error(w, "SSO login unavailable", http.StatusServiceUnavailable)
+					return
+				}
+				s.rejectLoginRequired(w, r, challenge)
+				return
+			}
+		}
 		var claims map[string]string
 		if request.Subject != "" && s.config.Identities != nil {
 			var err error
@@ -184,6 +204,11 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	q.Set("state", state)
 	auth.RawQuery = q.Encode()
 	http.Redirect(w, r, auth.String(), http.StatusFound)
+}
+
+func (s *Server) revokeHydraLoginSession(ctx context.Context, sid string) error {
+	path := "/admin/oauth2/auth/sessions/login?sid=" + url.QueryEscape(sid)
+	return s.hydra(ctx, http.MethodDelete, path, nil, nil)
 }
 
 func (s *Server) rejectLoginRequired(w http.ResponseWriter, r *http.Request, challenge string) {
@@ -349,6 +374,9 @@ func (s *Server) hydra(ctx context.Context, method, path string, body any, out a
 		return fmt.Errorf("Hydra request failed: %w", err)
 	}
 	defer resp.Body.Close()
+	if method == http.MethodDelete && out == nil && resp.StatusCode == http.StatusNoContent {
+		return nil
+	}
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("Hydra returned HTTP %d", resp.StatusCode)
 	}
