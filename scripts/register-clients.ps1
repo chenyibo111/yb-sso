@@ -1,37 +1,74 @@
+param([string]$ConfigPath, [string]$AdminUrl = 'http://localhost:4445', [switch]$Update)
 $ErrorActionPreference = 'Stop'
 . "$PSScriptRoot/client-config.ps1"
 
-foreach ($client in @(Get-SSOClients)) {
-    $clientId = $client.id
-    $redirect = $client.redirect
-    $logoutRedirect = $client.logoutRedirect
-    $backchannel = $client.backchannel
-    $uri = "http://localhost:4445/admin/clients/$clientId"
-    $body = @{
-        client_id = $clientId
-        redirect_uris = @($redirect)
-        post_logout_redirect_uris = @($logoutRedirect)
+$admin = $null
+if (-not [Uri]::TryCreate($AdminUrl, [UriKind]::Absolute, [ref]$admin) -or $admin.Scheme -notin @('http', 'https') -or -not $admin.Host -or $admin.UserInfo -or $admin.Fragment -or $admin.Query -or $admin.AbsolutePath -ne '/') {
+    throw 'AdminUrl must be an absolute http(s) origin'
+}
+$adminBase = $AdminUrl.TrimEnd('/')
+$clients = if ($PSBoundParameters.ContainsKey('ConfigPath')) { @(Get-SSOClients -ConfigPath $ConfigPath) } else { @(Get-SSOClients) }
+
+function Test-ClientSetEqual {
+    param([object[]]$Left, [object[]]$Right)
+    $first = @($Left | Sort-Object -CaseSensitive -Unique)
+    $second = @($Right | Sort-Object -CaseSensitive -Unique)
+    return ($first.Count -eq $second.Count -and ($first -join "`n") -ceq ($second -join "`n"))
+}
+
+function New-ClientBody {
+    param($Client)
+    $body = [ordered]@{
+        client_id = $Client.client_id
+        redirect_uris = @($Client.redirect_uris)
+        post_logout_redirect_uris = @($Client.post_logout_redirect_uris)
         grant_types = @('authorization_code')
         response_types = @('code')
-        scope = $client.scope
         token_endpoint_auth_method = 'none'
-        skip_consent = $client.skipConsent
+        scope = $Client.scope
+        skip_consent = $Client.skip_consent
     }
-    if ($backchannel) { $body.backchannel_logout_uri = $backchannel }
-    $body = $body | ConvertTo-Json -Depth 5
-    try {
-        $existing = Invoke-RestMethod -Method Get -Uri $uri -TimeoutSec 10
-		if ($redirect -notin $existing.redirect_uris -or $logoutRedirect -notin $existing.post_logout_redirect_uris -or $backchannel -ne $existing.backchannel_logout_uri -or $existing.scope -ne $client.scope -or [bool]$existing.skip_consent -ne [bool]$client.skipConsent) {
-            $updated = Invoke-RestMethod -Method Put -Uri $uri -ContentType 'application/json' -Body $body -TimeoutSec 10
-            Write-Output "$($updated.client_id) redirect updated"
-            continue
-        }
-        Write-Output "$clientId already registered"
-        continue
-    } catch {
-        if ($_.Exception.Response.StatusCode -ne 404) { throw }
-    }
+    if ($Client.backchannel_logout_uri) { $body.backchannel_logout_uri = $Client.backchannel_logout_uri }
+    return $body
+}
 
-    $created = Invoke-RestMethod -Method Post -Uri 'http://localhost:4445/admin/clients' -ContentType 'application/json' -Body $body -TimeoutSec 10
-    Write-Output "$($created.client_id) registered"
+foreach ($client in $clients) {
+    $clientId = $client.client_id
+    $uri = "$adminBase/admin/clients/$([Uri]::EscapeDataString($clientId))"
+    $existing = $null
+    try { $existing = Invoke-RestMethod -Method Get -Uri $uri -TimeoutSec 10 }
+    catch {
+        $status = $_.Exception.StatusCode
+        if ($null -eq $status -and $_.Exception.Response) { $status = $_.Exception.Response.StatusCode }
+        if ([int]$status -ne 404) { throw }
+    }
+    $desired = New-ClientBody $client
+    if ($null -eq $existing) {
+        $created = Invoke-RestMethod -Method Post -Uri "$adminBase/admin/clients" -ContentType 'application/json' -Body (ConvertTo-Json -InputObject $desired -Depth 30) -TimeoutSec 10
+        Write-Output "$($created.client_id) registered"
+        continue
+    }
+    if ($existing.client_id -ne $clientId -or $existing.token_endpoint_auth_method -ne 'none' -or -not (Test-ClientSetEqual @($existing.grant_types) @('authorization_code')) -or -not (Test-ClientSetEqual @($existing.response_types) @('code'))) {
+        throw "$clientId has an incompatible existing client type"
+    }
+    $changes = [System.Collections.Generic.List[string]]::new()
+    if (-not (Test-ClientSetEqual @($existing.redirect_uris) @($client.redirect_uris))) { $changes.Add('redirect_uris') }
+    if (-not (Test-ClientSetEqual @($existing.post_logout_redirect_uris) @($client.post_logout_redirect_uris))) { $changes.Add('post_logout_redirect_uris') }
+    if (($existing.backchannel_logout_uri ?? '') -cne ($client.backchannel_logout_uri ?? '')) { $changes.Add('backchannel_logout_uri') }
+    if (-not (Test-ClientSetEqual @($existing.scope -split '\s+' | Where-Object { $_ }) @($client.scope -split '\s+'))) { $changes.Add('scope') }
+    if ([bool]$existing.skip_consent -ne $client.skip_consent) { $changes.Add('skip_consent') }
+    if ($changes.Count -eq 0) { Write-Output "$clientId already registered"; continue }
+    if (-not $Update) { throw "$clientId differs in $($changes -join ', '); rerun with -Update to apply" }
+    $merged = @{}
+    if ($existing -is [System.Collections.IDictionary]) {
+        foreach ($key in $existing.Keys) { $merged[$key] = $existing[$key] }
+    } else {
+        foreach ($property in $existing.PSObject.Properties) { $merged[$property.Name] = $property.Value }
+    }
+    foreach ($key in @('created_at', 'updated_at')) { $merged.Remove($key) }
+    foreach ($key in $desired.Keys) { $merged[$key] = $desired[$key] }
+    if (-not $client.backchannel_logout_uri) { $merged['backchannel_logout_uri'] = $null }
+    $body = ConvertTo-Json -InputObject $merged -Depth 100 -WarningAction Stop
+    $updated = Invoke-RestMethod -Method Put -Uri $uri -ContentType 'application/json' -Body $body -TimeoutSec 10
+    Write-Output "$($updated.client_id) updated: $($changes -join ', ')"
 }

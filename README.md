@@ -23,7 +23,17 @@ docker compose up -d --build
 
 `docker compose` 会启动 PostgreSQL、Hydra、Go 登录服务和项目 A/B。浏览器继续使用 `http://localhost:9000`；同一 Compose 网络中的项目通过 `sso:9000` 查询会话状态。需要单独调试 Go 服务时，先停止 `sso` 容器，再运行 `go run ./cmd/sso`。
 
-`register-clients.ps1` 还会登记 Multica 的本地 OIDC 客户端 `multica-web`：授权码回调为 `http://localhost:8080/auth/feishu/callback`，退出回调为 `http://localhost:8080/auth/feishu/logged-out`（再跳转到网页登录页），允许 `openid profile email feishu_identity` scope。Multica 以 PKCE 发起授权请求；飞书工作邮箱通过 `email` claim 传递，`email_verified` 为 `false`。
+无参数运行 `register-clients.ps1` 会读取 `scripts/clients.default.json`，登记现有的项目 A/B、报销工作台和 Multica。已有客户端的配置发生差异时，脚本会列出不同字段并停止；确认后才使用 `-Update` 更新。Multica 的授权码回调为 `http://localhost:8080/auth/feishu/callback`，退出回调为 `http://localhost:8080/auth/feishu/logged-out`，允许 `openid profile email feishu_identity` scope。Multica 以 PKCE 发起授权请求；飞书工作邮箱通过 `email` claim 传递，`email_verified` 为 `false`。
+
+新增项目在自己的仓库保存单个客户端 JSON 配置，字段格式参见 `docs/superpowers/specs/2026-11-06-external-client-registration-design.md`，然后运行：
+
+```powershell
+./scripts/register-clients.ps1 -ConfigPath ../my-project/sso-client.json
+# 修改已有客户端的回调、scope 或退出地址时，先核对差异，再显式更新：
+./scripts/register-clients.ps1 -ConfigPath ../my-project/sso-client.json -Update
+```
+
+`-ConfigPath` 只处理传入的客户端，不修改默认四个客户端。可用 `-AdminUrl` 显式指定受信任的 Hydra 管理地址；默认 `http://localhost:4445`，管理端口只应在本机或可信网络可达。配置文件不放密钥。项目自身仍需实现 OIDC 授权码 + PKCE、ID Token 验签、本地会话；需要统一退出时还要处理后端退出通知并校验 SSO 会话撤销状态。
 
 若 Windows 尚未安装 Go，可用已有的 Go Docker 镜像编译 Windows 程序：
 
@@ -44,7 +54,7 @@ docker run --rm -v "${PWD}:/workspace" -w /workspace -e GOOS=windows -e GOARCH=a
 | Go 飞书登录服务 | `http://localhost:9000` |
 | 演示项目 A / B | `http://localhost:3100` / `http://localhost:3101` |
 
-Hydra 与 PostgreSQL 容器使用固定的**本地开发专用**密钥和密码，不能直接用于线上。`demo-a`、`demo-b` 是公开客户端，使用授权码和 PKCE，并登记后端退出通知地址。新增本地项目时，在 Hydra 登记独立客户端 ID、精确回调地址、退出后地址与后端退出地址；如需退出后立即停止访问受保护页面，也需查询本 SSO 的会话撤销状态。
+Hydra 与 PostgreSQL 容器使用固定的**本地开发专用**密钥和密码，不能直接用于线上。`demo-a`、`demo-b` 是公开客户端，使用授权码和 PKCE，并登记后端退出通知地址。新增本地项目仍需使用独立客户端 ID、精确回调地址、退出后地址与后端退出地址。
 
 ## 当前边界
 
