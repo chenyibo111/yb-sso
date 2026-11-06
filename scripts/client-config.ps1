@@ -46,7 +46,7 @@ function Read-SSOClientManifest {
         if ($record.scope -isnot [array] -or $record.scope.Count -eq 0) { throw 'scope must be a nonempty array' }
         $scopeSeen = @{}
         foreach ($scope in $record.scope) {
-            if ($scope -isnot [string] -or $scope -cnotmatch '^[A-Za-z][A-Za-z0-9._-]*$' -or $scopeSeen.ContainsKey($scope)) { throw 'invalid or duplicate scope' }
+            if ($scope -isnot [string] -or $scope -cnotin @('openid', 'profile', 'email', 'feishu_identity') -or $scopeSeen.ContainsKey($scope)) { throw 'invalid or duplicate scope' }
             $scopeSeen[$scope] = $true
         }
         if (-not $scopeSeen.ContainsKey('openid')) { throw 'scope must include openid' }

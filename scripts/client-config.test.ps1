@@ -21,12 +21,13 @@ try {
         '{"client_id":"bad","redirect_uris":["http://user:pass@localhost/x"],"post_logout_redirect_uris":["http://localhost/x"],"scope":["openid"]}',
         '{"client_id":"bad","redirect_uris":["http://localhost/x#fragment"],"post_logout_redirect_uris":["http://localhost/x"],"scope":["openid"]}',
         '{"client_id":"bad","redirect_uris":["http://localhost/x"],"post_logout_redirect_uris":["http://localhost/x"],"scope":["profile"]}',
+        '{"client_id":"bad","redirect_uris":["http://localhost/x"],"post_logout_redirect_uris":["http://localhost/x"],"scope":["openid","unsupported_scope"]}',
         '{"client_id":"bad","redirect_uris":["http://localhost/x"],"post_logout_redirect_uris":["http://localhost/x"],"scope":["openid"],"unexpected":true}'
     )
     foreach ($body in $invalid) {
         Set-Content -LiteralPath (Join-Path $temporary 'client.json') -Value $body
         $failed = $false
-        try { $result = @(Get-SSOClients -ConfigPath (Join-Path $temporary 'client.json')); if ($result.Count) { throw 'invalid config returned a client' } } catch { $failed = $true }
+        try { Get-SSOClients -ConfigPath (Join-Path $temporary 'client.json') | Out-Null } catch { $failed = $true }
         if (-not $failed) { throw "invalid config accepted: $body" }
     }
     Set-Content -LiteralPath (Join-Path $temporary 'client.json') -Value '{"client_id":"bad","redirect_uris":["http://localhost/x"],"post_logout_redirect_uris":["http://localhost/x"],"scope":["openid"],"backchannel_logout_uri":"javascript:alert(1)"}'
@@ -39,7 +40,7 @@ try {
     )) {
         Set-Content -LiteralPath (Join-Path $temporary 'client.json') -Value $body
         $failed = $false
-        try { $result = @(Read-SSOClientManifest -Path (Join-Path $temporary 'client.json') -AllowMultiple); if ($result.Count) { throw 'invalid default returned a client' } } catch { $failed = $true }
+        try { Read-SSOClientManifest -Path (Join-Path $temporary 'client.json') -AllowMultiple | Out-Null } catch { $failed = $true }
         if (-not $failed) { throw 'invalid multi-client config accepted' }
     }
 } finally {
