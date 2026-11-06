@@ -11,8 +11,8 @@ $clients = if ($PSBoundParameters.ContainsKey('ConfigPath')) { @(Get-SSOClients 
 
 function Test-ClientSetEqual {
     param([object[]]$Left, [object[]]$Right)
-    $first = @($Left | Sort-Object -Unique)
-    $second = @($Right | Sort-Object -Unique)
+    $first = @($Left | Sort-Object -CaseSensitive -Unique)
+    $second = @($Right | Sort-Object -CaseSensitive -Unique)
     return ($first.Count -eq $second.Count -and ($first -join "`n") -ceq ($second -join "`n"))
 }
 
@@ -59,10 +59,16 @@ foreach ($client in $clients) {
     if ([bool]$existing.skip_consent -ne $client.skip_consent) { $changes.Add('skip_consent') }
     if ($changes.Count -eq 0) { Write-Output "$clientId already registered"; continue }
     if (-not $Update) { throw "$clientId differs in $($changes -join ', '); rerun with -Update to apply" }
-    $merged = ConvertFrom-Json -InputObject (ConvertTo-Json -InputObject $existing -Depth 30) -AsHashtable
+    $merged = @{}
+    if ($existing -is [System.Collections.IDictionary]) {
+        foreach ($key in $existing.Keys) { $merged[$key] = $existing[$key] }
+    } else {
+        foreach ($property in $existing.PSObject.Properties) { $merged[$property.Name] = $property.Value }
+    }
     foreach ($key in @('created_at', 'updated_at')) { $merged.Remove($key) }
     foreach ($key in $desired.Keys) { $merged[$key] = $desired[$key] }
     if (-not $client.backchannel_logout_uri) { $merged['backchannel_logout_uri'] = $null }
-    $updated = Invoke-RestMethod -Method Put -Uri $uri -ContentType 'application/json' -Body (ConvertTo-Json -InputObject $merged -Depth 30) -TimeoutSec 10
+    $body = ConvertTo-Json -InputObject $merged -Depth 100 -WarningAction Stop
+    $updated = Invoke-RestMethod -Method Put -Uri $uri -ContentType 'application/json' -Body $body -TimeoutSec 10
     Write-Output "$($updated.client_id) updated: $($changes -join ', ')"
 }

@@ -42,7 +42,17 @@ try {
     & "$PSScriptRoot/register-clients.ps1" -ConfigPath $manifest | Out-Null
     if (($global:requests.Method -join ',') -ne 'Get') { throw 'identical external client was rewritten' }
 
-    $global:records['external-web'].metadata = @{ owner = 'preserve-me' }
+    Set-Content -LiteralPath $manifest -Value '{"client_id":"external-web","redirect_uris":["http://localhost/X"],"post_logout_redirect_uris":["http://localhost:4200/logged-out"],"scope":["openid","profile"]}'
+    $global:records['external-web'].redirect_uris = @('http://localhost/X', 'http://localhost/x')
+    $global:requests.Clear()
+    $failed = $false
+    try { & "$PSScriptRoot/register-clients.ps1" -ConfigPath $manifest | Out-Null } catch { $failed = $true }
+    if (-not $failed -or @($global:requests | Where-Object Method -ne 'Get').Count) { throw 'case-distinct extra callback was ignored' }
+    $global:records['external-web'].redirect_uris = @('http://localhost:4200/callback')
+
+    $deep = @{ leaf = 'preserve-deep-value' }
+    for ($level = 0; $level -lt 35; $level++) { $deep = @{ child = $deep } }
+    $global:records['external-web'].metadata = @{ owner = 'preserve-me'; nested = $deep }
     $global:records['external-web'].audience = @('existing-audience')
     $global:records['external-web'].userinfo_signed_response_alg = 'RS256'
     Set-Content -LiteralPath $manifest -Value '{"client_id":"external-web","redirect_uris":["http://localhost:4200/new-callback"],"post_logout_redirect_uris":["http://localhost:4200/logged-out"],"scope":["openid","profile"]}'
@@ -53,6 +63,9 @@ try {
     $global:requests.Clear()
     & "$PSScriptRoot/register-clients.ps1" -ConfigPath $manifest -Update | Out-Null
     if (($global:requests.Method -join ',') -ne 'Get,Put' -or $global:records['external-web'].metadata.owner -ne 'preserve-me' -or $global:records['external-web'].audience[0] -ne 'existing-audience' -or $global:records['external-web'].userinfo_signed_response_alg -ne 'RS256') { throw 'explicit update lost unmanaged fields' }
+    $cursor = $global:records['external-web'].metadata.nested
+    for ($level = 0; $level -lt 35; $level++) { $cursor = $cursor.child }
+    if ($cursor.leaf -ne 'preserve-deep-value') { throw 'deep unmanaged metadata was truncated' }
 
     $global:records['external-web'].token_endpoint_auth_method = 'client_secret_basic'
     $global:requests.Clear()
