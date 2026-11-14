@@ -10,8 +10,9 @@ import (
 )
 
 type fakeRevocations struct {
-	revoked map[string]bool
-	err     error
+	revoked    map[string]bool
+	err        error
+	activities int
 }
 
 func (f *fakeRevocations) Revoke(_ context.Context, sid string) error {
@@ -29,6 +30,13 @@ func (f *fakeRevocations) Revoked(_ context.Context, sid string) (bool, error) {
 		return false, f.err
 	}
 	return f.revoked[sid], nil
+}
+func (f *fakeRevocations) Active(_ context.Context, sid string, activity bool) (bool, error) {
+	if activity {
+		f.activities++
+	}
+	revoked, err := f.Revoked(context.Background(), sid)
+	return !revoked, err
 }
 
 type fakeTokenVerifier struct{}
@@ -146,6 +154,9 @@ func TestInternalSessionStatusRequiresKeyAndChecksRevocation(t *testing.T) {
 	}
 	if got := call(s.config.ServiceKey, `{"sid":"sid-active"}`); got != http.StatusNoContent {
 		t.Fatalf("active session rejected: %d", got)
+	}
+	if got := call(s.config.ServiceKey, `{"sid":"sid-active","activity":true}`); got != http.StatusNoContent || store.activities != 1 {
+		t.Fatalf("activity not recorded: status=%d count=%d", got, store.activities)
 	}
 	if got := call(s.config.ServiceKey, `{"sid":"sid-revoked"}`); got != http.StatusUnauthorized {
 		t.Fatalf("revoked session accepted: %d", got)
