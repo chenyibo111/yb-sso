@@ -23,9 +23,12 @@ type MemberClient interface {
 	User(context.Context, string) (feishu.Identity, error)
 }
 
+const rememberedSessionSeconds = 8 * 60 * 60
+
 type RevocationStore interface {
 	Revoke(context.Context, string) error
 	Revoked(context.Context, string) (bool, error)
+	Active(context.Context, string, bool) (bool, error)
 }
 
 type IdentityStore interface {
@@ -130,26 +133,32 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		s.rejectLoginRequired(w, r, challenge)
 		return
 	}
-	if request.Skip {
+	reuseRemembered := request.Skip
+	if reuseRemembered {
 		if s.config.Revocations != nil {
 			if request.SessionID == "" {
 				http.Error(w, "SSO login unavailable", http.StatusServiceUnavailable)
 				return
 			}
-			revoked, err := s.config.Revocations.Revoked(r.Context(), request.SessionID)
+			active, err := s.config.Revocations.Active(r.Context(), request.SessionID, false)
 			if err != nil {
 				http.Error(w, "SSO login unavailable", http.StatusServiceUnavailable)
 				return
 			}
-			if revoked {
+			if !active {
 				if err := s.revokeHydraLoginSession(r.Context(), request.SessionID); err != nil {
 					http.Error(w, "SSO login unavailable", http.StatusServiceUnavailable)
 					return
 				}
-				s.rejectLoginRequired(w, r, challenge)
-				return
+				if silent {
+					s.rejectLoginRequired(w, r, challenge)
+					return
+				}
+				reuseRemembered = false
 			}
 		}
+	}
+	if reuseRemembered {
 		var claims map[string]string
 		if request.Subject != "" && s.config.Identities != nil {
 			var err error
@@ -170,7 +179,7 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 				RedirectTo string `json:"redirect_to"`
 			}
 			path = "/admin/oauth2/auth/requests/login/accept?login_challenge=" + url.QueryEscape(challenge)
-			if err := s.hydra(r.Context(), http.MethodPut, path, map[string]any{"subject": request.Subject, "context": claims, "remember": true, "remember_for": 600}, &result); err != nil || result.RedirectTo == "" {
+			if err := s.hydra(r.Context(), http.MethodPut, path, map[string]any{"subject": request.Subject, "context": claims, "remember": true, "remember_for": rememberedSessionSeconds}, &result); err != nil || result.RedirectTo == "" {
 				http.Error(w, "SSO login failed", http.StatusBadGateway)
 				return
 			}
@@ -272,7 +281,7 @@ func (s *Server) callback(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if err := s.hydra(r.Context(), http.MethodPut, path, map[string]any{"subject": subject, "context": identityContext, "remember": true, "remember_for": 600}, &result); err != nil {
+	if err := s.hydra(r.Context(), http.MethodPut, path, map[string]any{"subject": subject, "context": identityContext, "remember": true, "remember_for": rememberedSessionSeconds}, &result); err != nil {
 		http.Error(w, "SSO login failed", http.StatusBadGateway)
 		return
 	}
@@ -342,7 +351,7 @@ func (s *Server) consent(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	accept := "/admin/oauth2/auth/requests/consent/accept?consent_challenge=" + url.QueryEscape(challenge)
-	if err := s.hydra(r.Context(), http.MethodPut, accept, map[string]any{"grant_scope": request.RequestedScope, "session": map[string]any{"id_token": claims}, "remember": true, "remember_for": 600}, &result); err != nil {
+	if err := s.hydra(r.Context(), http.MethodPut, accept, map[string]any{"grant_scope": request.RequestedScope, "session": map[string]any{"id_token": claims}, "remember": true, "remember_for": rememberedSessionSeconds}, &result); err != nil {
 		http.Error(w, "SSO consent failed", http.StatusBadGateway)
 		return
 	}

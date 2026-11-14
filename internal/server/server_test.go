@@ -128,8 +128,9 @@ func TestLoginReusesRememberedHydraSubjectWithVerifiedIdentity(t *testing.T) {
 		"feishu_open_id": "ou_alice", "feishu_user_id": "u_alice", "feishu_tenant_key": "tenant-1", "feishu_app_id": "cli_test", "name": "Alice",
 	}}}
 	var accepted struct {
-		Subject string            `json:"subject"`
-		Context map[string]string `json:"context"`
+		Subject     string            `json:"subject"`
+		Context     map[string]string `json:"context"`
+		RememberFor int               `json:"remember_for"`
 	}
 	hydra := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -148,7 +149,7 @@ func TestLoginReusesRememberedHydraSubjectWithVerifiedIdentity(t *testing.T) {
 	}
 	w := httptest.NewRecorder()
 	s.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/login?login_challenge=remembered", nil))
-	if w.Code != http.StatusFound || accepted.Subject != subject || accepted.Context["feishu_open_id"] != "ou_alice" || identities.loads != 1 || feishu.calls != 0 {
+	if w.Code != http.StatusFound || accepted.Subject != subject || accepted.Context["feishu_open_id"] != "ou_alice" || accepted.RememberFor != 8*60*60 || identities.loads != 1 || feishu.calls != 0 {
 		t.Fatalf("remembered login failed: status=%d accepted=%+v loads=%d feishu=%d", w.Code, accepted, identities.loads, feishu.calls)
 	}
 }
@@ -193,6 +194,35 @@ func TestLoginRejectsRevokedRememberedSessionAndClearsHydraSession(t *testing.T)
 	s.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/login?login_challenge=revoked", nil))
 	if w.Code != http.StatusFound || !deleted || !rejected || accepted {
 		t.Fatalf("revoked login status=%d deleted=%v rejected=%v accepted=%v", w.Code, deleted, rejected, accepted)
+	}
+}
+
+func TestExpiredRememberedSessionStartsInteractiveFeishuLogin(t *testing.T) {
+	deleted, rejected, accepted := false, false, false
+	hydra := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method + " " + r.URL.Path {
+		case "GET /admin/oauth2/auth/requests/login":
+			_ = json.NewEncoder(w).Encode(map[string]any{"skip": true, "subject": "fs_old", "session_id": "sid-expired", "request_url": "http://localhost:4444/oauth2/auth?scope=openid"})
+		case "DELETE /admin/oauth2/auth/sessions/login":
+			deleted = true
+			w.WriteHeader(http.StatusNoContent)
+		case "PUT /admin/oauth2/auth/requests/login/reject":
+			rejected = true
+		case "PUT /admin/oauth2/auth/requests/login/accept":
+			accepted = true
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer hydra.Close()
+	s, err := New(Config{AppID: "cli_test", RedirectURI: "http://localhost:9000/auth/feishu/callback", HydraAdminURL: hydra.URL, Revocations: &fakeRevocations{revoked: map[string]bool{"sid-expired": true}}}, &fakeFeishu{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := httptest.NewRecorder()
+	s.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/login?login_challenge=expired", nil))
+	if w.Code != http.StatusFound || !strings.HasPrefix(w.Header().Get("Location"), "https://open.feishu.cn/") || !deleted || rejected || accepted {
+		t.Fatalf("interactive reauth status=%d location=%q deleted=%v rejected=%v accepted=%v", w.Code, w.Header().Get("Location"), deleted, rejected, accepted)
 	}
 }
 

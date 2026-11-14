@@ -26,7 +26,8 @@ func (s *Server) internalSessionStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, 1024)
 	var input struct {
-		SID string `json:"sid"`
+		SID      string `json:"sid"`
+		Activity bool   `json:"activity"`
 	}
 	decoder := json.NewDecoder(r.Body)
 	decoder.DisallowUnknownFields()
@@ -39,12 +40,12 @@ func (s *Server) internalSessionStatus(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid request", http.StatusBadRequest)
 		return
 	}
-	revoked, err := s.config.Revocations.Revoked(r.Context(), input.SID)
+	active, err := s.config.Revocations.Active(r.Context(), input.SID, input.Activity)
 	if err != nil {
 		http.Error(w, "session check unavailable", http.StatusServiceUnavailable)
 		return
 	}
-	if revoked {
+	if !active {
 		http.Error(w, "session revoked", http.StatusUnauthorized)
 		return
 	}
@@ -113,12 +114,12 @@ func (s *Server) sessionStatus(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid session token", http.StatusUnauthorized)
 		return
 	}
-	revoked, err := s.config.Revocations.Revoked(r.Context(), sid)
+	active, err := s.config.Revocations.Active(r.Context(), sid, false)
 	if err != nil {
 		http.Error(w, "session check unavailable", http.StatusServiceUnavailable)
 		return
 	}
-	if revoked {
+	if !active {
 		http.Error(w, "session revoked", http.StatusUnauthorized)
 		return
 	}

@@ -35,6 +35,7 @@ services:
       URLS_CONSENT: http://localhost:9000/consent
       URLS_LOGOUT: http://localhost:9000/logout
       OIDC_SUBJECT_IDENTIFIERS_SUPPORTED_TYPES: public
+      TTL_ID_TOKEN: 8h
     ports:
       - "127.0.0.1:4444:4444"
       - "127.0.0.1:4445:4445"
